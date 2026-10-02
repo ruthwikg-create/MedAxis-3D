@@ -6,27 +6,28 @@ if (-not (Test-Path $python)) {
 }
 
 $models = @(
-  @{ Name = "wholeBody_ct_segmentation"; Version = "0.2.7" },
-  @{ Name = "spleen_ct_segmentation"; Version = "0.6.1" },
-  @{ Name = "prostate_mri_anatomy"; Version = "0.3.6" },
-  @{ Name = "ventricular_short_axis_3label"; Version = "0.3.5" },
-  @{ Name = "brats_mri_segmentation"; Version = "0.5.4" },
-  @{ Name = "lung_nodule_ct_detection"; Version = "0.6.10" }
+  "wholeBody_ct_segmentation",
+  "spleen_ct_segmentation",
+  "prostate_mri_anatomy",
+  "ventricular_short_axis_3label",
+  "brats_mri_segmentation",
+  "lung_nodule_ct_detection"
 )
 $bundleDir = Join-Path $root "backend\models\bundles"
 New-Item -ItemType Directory -Force -Path $bundleDir | Out-Null
 
-& $python -c "import monai,torch; print('MONAI', monai.__version__); print('Torch', torch.__version__, 'CUDA', torch.cuda.is_available())"
-if ($LASTEXITCODE -ne 0) { throw "MONAI/PyTorch runtime check failed." }
+& $python -c "import monai,torch,fire,requests,huggingface_hub; print('MONAI', monai.__version__); print('Torch', torch.__version__, 'CUDA', torch.cuda.is_available()); print('Downloader dependencies: OK')"
+if ($LASTEXITCODE -ne 0) { throw "MONAI/PyTorch/downloader dependency check failed." }
 
-foreach ($m in $models) {
-  Write-Host "Downloading $($m.Name) v$($m.Version)..." -ForegroundColor Cyan
-  & $python -m monai.bundle download --name $m.Name --version $m.Version --bundle_dir $bundleDir --source github
-  if ($LASTEXITCODE -ne 0) { throw "Download failed for $($m.Name) v$($m.Version)." }
+foreach ($name in $models) {
+  Write-Host "Downloading $name..." -ForegroundColor Cyan
+  & $python -m monai.bundle download --name $name --bundle_dir $bundleDir --source monaihosting --remove_prefix monai_ --progress
+  if ($LASTEXITCODE -ne 0) { throw "Download failed for $name." }
 }
 
-Write-Host "Verifying MedAxis model readiness..." -ForegroundColor Cyan
-& $python -c "from app.services import ai; bad=[m for m in ai.MODEL_CATALOG if not ai.model_status(m)['inference_ready']]; print('Not ready:', bad); raise SystemExit(1 if bad else 0)"
-if ($LASTEXITCODE -ne 0) { throw "One or more downloaded bundles failed the MedAxis readiness contract." }
+Write-Host "Verifying requested MedAxis model readiness..." -ForegroundColor Cyan
+& $python -c "from app.services import ai; requested=['wholeBody_ct_segmentation','spleen_ct_segmentation','prostate_mri_anatomy','ventricular_short_axis_3label','brats_mri_segmentation','lung_nodule_ct_detection']; bad=[m for m in requested if not ai.model_status(m)['inference_ready']]; [print(m, '=>', ai.model_status(m)['status']) for m in requested]; print('Not ready:', bad); raise SystemExit(1 if bad else 0)"
+if ($LASTEXITCODE -ne 0) { throw "One or more requested bundles failed the MedAxis readiness contract." }
 
 Write-Host "ALL REQUESTED MONAI BUNDLES ARE INSTALLED AND INFERENCE-READY." -ForegroundColor Green
+Write-Host "Note: pathology_tumor_detection is intentionally not part of this CT/MRI workstation download set."
