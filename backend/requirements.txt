@@ -22,3 +22,7 @@ highdicom==0.28.1
 pytest>=8,<10
 httpx>=0.27,<1
 python-dotenv>=1.0,<2
+
+fire>=0.7,<1
+requests>=2.32,<3
+huggingface_hub>=2,<3
