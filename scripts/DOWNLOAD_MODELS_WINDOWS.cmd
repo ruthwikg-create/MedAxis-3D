@@ -23,6 +23,7 @@ for %%A in (
 "ventricular_short_axis_3label"
 "brats_mri_segmentation"
 "lung_nodule_ct_detection"
+"pathology_tumor_detection"
 ) do (
   echo.
   echo Downloading %%A ...
@@ -31,9 +32,9 @@ for %%A in (
 
 echo.
 echo Verifying requested downloaded bundle contracts...
-"%PY%" -c "from app.services import ai; requested=['wholeBody_ct_segmentation','spleen_ct_segmentation','prostate_mri_anatomy','ventricular_short_axis_3label','brats_mri_segmentation','lung_nodule_ct_detection']; bad=[m for m in requested if not ai.model_status(m)['inference_ready']]; [print(m, '=>', ai.model_status(m)['status']) for m in requested]; print('Not ready:', bad); raise SystemExit(1 if bad else 0)" || exit /b 1
+"%PY%" -c "from app.services import ai; requested=['wholeBody_ct_segmentation','spleen_ct_segmentation','prostate_mri_anatomy','ventricular_short_axis_3label','brats_mri_segmentation','lung_nodule_ct_detection','pathology_tumor_detection']; bad=[m for m in requested if not ai.model_status(m)['inference_ready']]; [print(m, '=>', ai.model_status(m)['status']) for m in requested]; print('Not ready:', bad); raise SystemExit(1 if bad else 0)" || exit /b 1
 
 echo.
 echo ALL REQUESTED MONAI BUNDLES ARE INSTALLED AND INFERENCE-READY.
-echo Note: pathology_tumor_detection is intentionally not part of this CT/MRI workstation download set.
+echo Pathology is included as an optional MONAI whole-slide research model.
 exit /b 0
