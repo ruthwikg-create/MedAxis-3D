@@ -30,7 +30,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { api, downloadEndpoint, viewerUrl } from "../lib/api";
+import { api, clearAuthToken, downloadEndpoint, setAuthToken, viewerUrl } from "../lib/api";
 import { AnalyticsSuite } from "../components/AnalyticsSuite";
 import { useAppStore } from "../lib/store";
 import { Badge, EmptyState, HelpRow, IconButton, Metric, Section } from "../components/Ui";
