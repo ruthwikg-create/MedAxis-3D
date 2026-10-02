@@ -14,27 +14,26 @@ echo Model weights are intentionally excluded from Git.
 echo Review each bundle's license and publisher validation before research use.
 echo.
 
-"%PY%" -c "import monai; import torch; print('MONAI:', monai.__version__); print('Torch:', torch.__version__, 'CUDA:', torch.cuda.is_available())" || exit /b 1
+"%PY%" -c "import monai,torch,fire,requests,huggingface_hub; print('MONAI:', monai.__version__); print('Torch:', torch.__version__, 'CUDA:', torch.cuda.is_available()); print('Downloader dependencies: OK')" || exit /b 1
 
 for %%A in (
-"wholeBody_ct_segmentation|0.2.7"
-"spleen_ct_segmentation|0.6.1"
-"prostate_mri_anatomy|0.3.6"
-"ventricular_short_axis_3label|0.3.5"
-"brats_mri_segmentation|0.5.4"
-"lung_nodule_ct_detection|0.6.10"
+"wholeBody_ct_segmentation"
+"spleen_ct_segmentation"
+"prostate_mri_anatomy"
+"ventricular_short_axis_3label"
+"brats_mri_segmentation"
+"lung_nodule_ct_detection"
 ) do (
-  for /f "tokens=1,2 delims=|" %%B in ("%%A") do (
-    echo.
-    echo Downloading %%B v%%C ...
-    "%PY%" -m monai.bundle download --name "%%B" --version "%%C" --bundle_dir "%ROOT%\backend\models\bundles" --source github || exit /b 1
-  )
+  echo.
+  echo Downloading %%A ...
+  "%PY%" -m monai.bundle download --name "%%A" --bundle_dir "%ROOT%\backend\models\bundles" --source monaihosting --remove_prefix monai_ --progress || exit /b 1
 )
 
 echo.
-echo Verifying downloaded bundle contracts...
-"%PY%" -c "from app.services import ai; bad=[]; [(bad.append(m) if not ai.model_status(m)['inference_ready'] else None) for m in ai.MODEL_CATALOG]; print('Models not inference-ready:', bad); raise SystemExit(1 if bad else 0)" || exit /b 1
+echo Verifying requested downloaded bundle contracts...
+"%PY%" -c "from app.services import ai; requested=['wholeBody_ct_segmentation','spleen_ct_segmentation','prostate_mri_anatomy','ventricular_short_axis_3label','brats_mri_segmentation','lung_nodule_ct_detection']; bad=[m for m in requested if not ai.model_status(m)['inference_ready']]; [print(m, '=>', ai.model_status(m)['status']) for m in requested]; print('Not ready:', bad); raise SystemExit(1 if bad else 0)" || exit /b 1
 
 echo.
 echo ALL REQUESTED MONAI BUNDLES ARE INSTALLED AND INFERENCE-READY.
+echo Note: pathology_tumor_detection is intentionally not part of this CT/MRI workstation download set.
 exit /b 0
