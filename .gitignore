@@ -1,0 +1,22 @@
+# Runtime data / secrets
+data/cases/
+.env
+
+# Python
+backend/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Next.js / Node
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+
+backend/models/bundles/*
+!backend/models/bundles/.gitkeep
+backend/models/cross_modality/*.pt
+backend/models/cross_modality/*.ts
+backend/models/cross_modality/*.onnx
+backend/models/classifiers/*.joblib
+backend/data/objects/

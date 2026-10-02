@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:17
+    container_name: medaxis-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: medaxis
+      POSTGRES_USER: medaxis
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-in-production}
+    ports:
+      - "5432:5432"
+    volumes:
+      - medaxis-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medaxis -d medaxis"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: medaxis-minio
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-medaxis}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-change-me-in-production}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - medaxis-minio:/data
+
+volumes:
+  medaxis-postgres:
+  medaxis-minio:
