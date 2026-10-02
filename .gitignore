@@ -1,22 +1,35 @@
 # Runtime data / secrets
 data/cases/
+data/*.db
+data/*.sqlite
+data/*.sqlite3
 .env
+*.pem
+*.key
 
 # Python
 backend/.venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+*.egg-info/
 
 # Next.js / Node
 frontend/node_modules/
 frontend/.next/
 frontend/out/
+frontend/*.tsbuildinfo
+*.tsbuildinfo
 
+# Local runtime / object storage
+backend/data/objects/
+
+# MONAI model bundles and model artifacts
 backend/models/bundles/*
 !backend/models/bundles/.gitkeep
 backend/models/cross_modality/*.pt
 backend/models/cross_modality/*.ts
 backend/models/cross_modality/*.onnx
+backend/models/cross_modality/*.pth
 backend/models/classifiers/*.joblib
-backend/data/objects/
+backend/models/classifiers/*.pkl
