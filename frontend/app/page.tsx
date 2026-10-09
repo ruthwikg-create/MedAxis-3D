@@ -283,6 +283,7 @@ export default function Home() {
           backendOnline={backendOnline}
           loadingCase={loadingCase}
           measurements={measurements}
+          onMeasurements={setMeasurements}
           surface={surface}
           mpr={mpr}
           models={models}
@@ -390,6 +391,7 @@ function WorkspaceShell(props: {
   backendOnline: boolean;
   loadingCase: boolean;
   measurements: Measurements | null;
+  onMeasurements: (value: Measurements | null) => void;
   surface: Surface | null;
   mpr: MPR | null;
   models: ModelRecord[];
@@ -413,20 +415,41 @@ function WorkspaceShell(props: {
   const [pan, setPan] = useState({ x: 0, y: 0 });
 
   const dimensions = activeCase?.summary?.volume_dimensions ?? [1, 1, 1];
-  const maxSlice = useMemo(() => {
-    if (store.plane === "axial") return Math.max(0, (dimensions[2] ?? 1) - 1);
-    if (store.plane === "coronal") return Math.max(0, (dimensions[1] ?? 1) - 1);
-    return Math.max(0, (dimensions[0] ?? 1) - 1);
-  }, [dimensions, store.plane]);
+  // Case summaries publish dimensions in [x, y, z] while imaging volumes are
+  // stored [z, y, x]. Use the same axis convention as the FastAPI slice renderer.
+  const maxSlice = Math.max(0, ((store.plane === "axial" ? dimensions[2]
+    : store.plane === "coronal" ? dimensions[1] : dimensions[0]) ?? 1) - 1);
 
   const currentSlice = store.plane === "axial" ? store.position.z : store.plane === "coronal" ? store.position.y : store.position.x;
-  const imageSrc = activeCase ? viewerUrl(activeCase.case_id, store.plane, Math.min(currentSlice, maxSlice), store.windowLevel, store.windowWidth) : "";
+  const boundedSlice = Math.max(0, Math.min(currentSlice, maxSlice));
+  const imageSrc = activeCase ? viewerUrl(activeCase.case_id, store.plane, boundedSlice, store.windowLevel, store.windowWidth) : "";
 
   useEffect(() => {
     if (!activeCase) return;
-    const clamped = Math.min(currentSlice, maxSlice);
-    if (clamped !== currentSlice) store.setSlice(clamped);
-  }, [activeCase, currentSlice, maxSlice, store]);
+    if (boundedSlice !== currentSlice) store.setSlice(boundedSlice);
+  }, [activeCase?.case_id, boundedSlice, currentSlice, store.setSlice]);
+
+  // Update the research statistics for the actual displayed 2D plane.
+  // Debounce changes so dragging or cine playback does not flood FastAPI or
+  // append an audit event for every intermediate position.
+  useEffect(() => {
+    if (!activeCase || cine) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void api<Measurements>("/measurements", {
+        method: "POST",
+        body: JSON.stringify({ case_id: activeCase.case_id, plane: store.plane, index: boundedSlice }),
+      }).then(result => {
+        if (!cancelled) props.onMeasurements(result);
+      }).catch(error => {
+        if (!cancelled) {
+          props.onMeasurements(null);
+          setToast({ kind: "warn", text: error instanceof Error ? error.message : "Slice statistics unavailable." });
+        }
+      });
+    }, 280);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [activeCase?.case_id, store.plane, boundedSlice, cine, props.onMeasurements, setToast]);
 
   useEffect(() => {
     if (!cine || !activeCase) return;
@@ -444,13 +467,21 @@ function WorkspaceShell(props: {
 
   useEffect(() => {
     if (!activeCase || store.workspace !== "4-Panel MPR") return;
+    let cancelled = false;
     const timer = window.setTimeout(() => {
-      void api<MPR>(`/viewer/${encodeURIComponent(activeCase.case_id)}/mpr?z=${store.position.z}&y=${store.position.y}&x=${store.position.x}`).then((value) => {
-        setMprLocal(value);
-      }).catch(() => undefined);
+      const query = new URLSearchParams({
+        z: String(store.position.z), y: String(store.position.y), x: String(store.position.x),
+      });
+      if (store.windowLevel !== null) query.set("wl", String(store.windowLevel));
+      if (store.windowWidth !== null) query.set("ww", String(store.windowWidth));
+      void api<MPR>(`/viewer/${encodeURIComponent(activeCase.case_id)}/mpr?${query}`).then(value => {
+        if (!cancelled) setMprLocal(value);
+      }).catch(error => {
+        if (!cancelled) setToast({ kind: "warn", text: error instanceof Error ? error.message : "MPR loading failed." });
+      });
     }, 90);
-    return () => window.clearTimeout(timer);
-  }, [activeCase, store.position.x, store.position.y, store.position.z, store.workspace, store.windowLevel, store.windowWidth]);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [activeCase?.case_id, store.position.x, store.position.y, store.position.z, store.workspace, store.windowLevel, store.windowWidth, setToast]);
 
   const [mprLocal, setMprLocal] = useState<MPR | null>(mpr);
   useEffect(() => setMprLocal(mpr), [mpr]);
@@ -548,6 +579,7 @@ function WorkspaceShell(props: {
               mpr={mprLocal}
               surface={surface}
               measurements={measurements}
+              onMeasurements={props.onMeasurements}
               qc={qc}
               windowOpen={windowOpen}
               onWindowOpen={setWindowOpen}
@@ -613,6 +645,7 @@ function Viewer(props: {
   mpr: MPR | null;
   surface: Surface | null;
   measurements: Measurements | null;
+  onMeasurements: (value: Measurements | null) => void;
   qc: QC | null;
   windowOpen: boolean;
   onWindowOpen: (value: boolean) => void;
