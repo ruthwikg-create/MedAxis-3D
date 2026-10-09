@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 type Workspace =
-  | "2D Diagnostic"
+  | "2D Research Viewer"
   | "4-Panel MPR"
   | "3D Reconstruction"
   | "AI Analysis"
@@ -29,7 +29,7 @@ type State = {
 };
 
 export const useAppStore = create<State>((set, get) => ({
-  workspace: "2D Diagnostic",
+  workspace: "2D Research Viewer",
   mode: "RADIOLOGY",
   panelLeft: true,
   panelRight: true,

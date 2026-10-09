@@ -40,7 +40,7 @@ import { Badge, EmptyState, HelpRow, IconButton, Metric, Section } from "../comp
 type Toast = { kind: "good" | "warn" | "bad"; text: string };
 type Plane = "axial" | "sagittal" | "coronal";
 type Workspace =
-  | "2D Diagnostic"
+  | "2D Research Viewer"
   | "4-Panel MPR"
   | "3D Reconstruction"
   | "AI Analysis"
@@ -104,7 +104,7 @@ type MPR = { axial: string; sagittal: string; coronal: string; position: { z: nu
 type Diagnostics = Record<string, string>;
 
 const WORKSPACES: Workspace[] = [
-  "2D Diagnostic",
+  "2D Research Viewer",
   "4-Panel MPR",
   "3D Reconstruction",
   "AI Analysis",
@@ -168,7 +168,7 @@ export default function Home() {
       setMpr(null);
       setShowLanding(false);
       setShowCases(false);
-      useAppStore.setState({ workspace: "2D Diagnostic", plane: "axial", position: { z: 0, y: 0, x: 0 }, windowLevel: null, windowWidth: null });
+      useAppStore.setState({ workspace: "2D Research Viewer", plane: "axial", position: { z: 0, y: 0, x: 0 }, windowLevel: null, windowWidth: null });
       await refreshDerived(detail.case_id);
     } catch (error) {
       setToast({ kind: "bad", text: error instanceof Error ? error.message : "Unable to open case." });
@@ -460,9 +460,9 @@ function WorkspaceShell(props: {
         case "p": setToast({ kind: "warn", text: "Pan mode is the default pointer drag interaction in the 2D viewer." }); break;
         case "r": setZoom(1); setPan({ x: 0, y: 0 }); break;
         case "3": store.set({ workspace: "3D Reconstruction" }); break;
-        case "1": store.set({ plane: "axial", workspace: "2D Diagnostic" }); break;
-        case "2": store.set({ plane: "sagittal", workspace: "2D Diagnostic" }); break;
-        case "4": store.set({ plane: "coronal", workspace: "2D Diagnostic" }); break;
+        case "1": store.set({ plane: "axial", workspace: "2D Research Viewer" }); break;
+        case "2": store.set({ plane: "sagittal", workspace: "2D Research Viewer" }); break;
+        case "4": store.set({ plane: "coronal", workspace: "2D Research Viewer" }); break;
         case " ": event.preventDefault(); setCine((value) => !value); break;
         default: break;
       }
@@ -472,7 +472,7 @@ function WorkspaceShell(props: {
   }, [setToast, store]);
 
   function changePlane(plane: Plane) {
-    store.set({ plane, workspace: "2D Diagnostic" });
+    store.set({ plane, workspace: "2D Research Viewer" });
   }
 
   async function exportReport() {
@@ -592,7 +592,7 @@ function LeftPanel(props: { activeCase: CaseRecord | null; cases: CaseRecord[]; 
     </Section>
     <Section title="Recent Studies"><div className="space-y-1">{recent.length ? recent.map((item) => <button key={item.case_id} type="button" onClick={() => props.onOpenCase(item)} aria-label={`Open study ${item.study?.study_description ?? item.case_id}`} className="block w-full rounded-md border border-slate-900 bg-slate-950/40 px-2.5 py-2 text-left hover:border-cyan-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"><div className="truncate text-[10px] text-slate-300">{item.study?.study_description ?? item.case_id}</div><div className="mt-1 flex justify-between text-[9px] text-slate-500"><span>{item.study?.modality ?? "—"}</span><span>{item.status} · Open ↗</span></div></button>) : <div className="text-[10px] text-slate-600">No recent cases.</div>}</div></Section>
     <Section title="Keyboard"><div className="grid grid-cols-2 gap-1.5">{[["W", "Window/Level"], ["Z", "Zoom"], ["P", "Pan"], ["R", "Reset"], ["3", "3D"], ["Space", "Cine"]].map(([key, label]) => <div key={key} className="flex items-center gap-2 rounded border border-slate-900 bg-slate-950/35 px-2 py-1.5"><kbd className="mono rounded border border-slate-800 bg-slate-900 px-1 text-[9px] text-slate-400">{key}</kbd><span className="text-[9px] text-slate-600">{label}</span></div>)}</div></Section>
-    <Section title="Data Integrity"><HelpRow icon={ShieldCheck} label="Source provenance" value="tracked" /><HelpRow icon={Info} label="Synthetic data" value={props.activeCase?.status === "DEMO DATA" ? "YES" : "NO"} /><HelpRow icon={Archive} label="Audit trail" value="enabled" /></Section>
+    <Section title="Data Integrity"><HelpRow icon={ShieldCheck} label="Source provenance" value="research metadata" /><HelpRow icon={Info} label="Synthetic data" value={props.activeCase?.status === "DEMO DATA" ? "YES" : "NO"} /><HelpRow icon={Archive} label="Audit events" value="research logs only" /></Section>
   </div>;
 }
 
@@ -779,8 +779,8 @@ function RightPanel(props: { activeCase: CaseRecord | null; measurements: Measur
   }
 
   return <div>
-    <Section title="Analysis Status"><div className="grid grid-cols-2 gap-1.5"><StatusCard label="QC" value={props.qc?.overall ?? "—"} tone={props.qc?.overall === "PASS" ? "good" : props.qc?.overall === "FAIL" ? "bad" : "warn"} /><StatusCard label="3D Surface" value={props.surface?.status ?? "—"} tone={props.surface?.status === "AVAILABLE" ? "good" : "warn"} /><StatusCard label="AI Models" value="CONFIG REQUIRED" tone="warn" /><StatusCard label="GPU" value={props.diagnostics?.gpu ?? "NOT CLAIMED"} tone="neutral" /></div></Section>
-    <Section title="Measurements"><div className="grid gap-1.5"><Metric label={props.measurements?.units === "HU" ? "Mean HU" : "Mean intensity"} value={props.measurements ? props.measurements.mean_intensity.toFixed(3) : "—"} source="Selected plane • actual source pixels" /><Metric label={props.measurements?.units === "HU" ? "Median HU" : "Median intensity"} value={props.measurements ? props.measurements.median_intensity.toFixed(3) : "—"} source="Selected plane • actual source pixels" /><Metric label="Area" value={props.measurements ? props.measurements.area_mm2.toFixed(3) : "—"} unit="mm²" source="Pixel count × source spacing" /></div><div className="mt-2 rounded border border-slate-800 bg-slate-950/45 p-2 text-[9px] leading-4 text-slate-500">{props.measurements?.method ?? "Measurement unavailable — required imaging metadata or validated calibration is missing."}</div></Section>
+    <Section title="Analysis Status"><div className="grid grid-cols-2 gap-1.5"><StatusCard label="Header / geometry QC" value={props.qc?.overall ?? "—"} tone={props.qc?.overall === "PASS" ? "good" : props.qc?.overall === "FAIL" ? "bad" : "warn"} /><StatusCard label="3D Surface" value={props.surface?.status ?? "—"} tone={props.surface?.status === "AVAILABLE" ? "good" : "warn"} /><StatusCard label="AI Models" value="NOT VALIDATED" tone="warn" /><StatusCard label="GPU" value={props.diagnostics?.gpu ?? "NOT CLAIMED"} tone="neutral" /></div></Section>
+    <Section title="Measurements"><p className="mb-2 text-[10px] text-amber-300">Research measurements only; synthetic data and displayed QC do not establish clinical validity or diagnosis.</p><div className="grid gap-1.5"><Metric label={props.measurements?.units === "HU" ? "Mean HU" : "Mean intensity"} value={props.measurements ? props.measurements.mean_intensity.toFixed(3) : "—"} source="Selected plane • actual source pixels" /><Metric label={props.measurements?.units === "HU" ? "Median HU" : "Median intensity"} value={props.measurements ? props.measurements.median_intensity.toFixed(3) : "—"} source="Selected plane • actual source pixels" /><Metric label="Area" value={props.measurements ? props.measurements.area_mm2.toFixed(3) : "—"} unit="mm²" source="Pixel count × source spacing" /></div><div className="mt-2 rounded border border-slate-800 bg-slate-950/45 p-2 text-[9px] leading-4 text-slate-500">{props.measurements?.method ?? "Measurement unavailable — required imaging metadata or validated calibration is missing."}</div></Section>
     <Section title="Research Threshold Segmentation"><div className="space-y-2"><div className="grid grid-cols-2 gap-1.5"><input value={lower} onChange={(event) => setLower(event.target.value)} inputMode="decimal" aria-label="Lower intensity threshold" className="rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-[10px] text-slate-300 outline-none" placeholder="Lower" /><input value={upper} onChange={(event) => setUpper(event.target.value)} inputMode="decimal" aria-label="Upper intensity threshold" className="rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-[10px] text-slate-300 outline-none" placeholder="Upper" /></div><button onClick={() => void runThreshold()} disabled={running || !props.activeCase} className="w-full rounded-md border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-2 text-[10px] text-cyan-100 disabled:opacity-50">{running ? "Running…" : "Run threshold mask"}</button>{thresholdResult ? <div className="rounded border border-slate-800 bg-slate-950/55 p-2"><div className="text-[9px] uppercase tracking-[.12em] text-slate-600">Actual data-derived volume</div><div className="mt-1 mono text-sm text-slate-200">{thresholdResult.volume_cm3.toFixed(3)} cm³</div><div className="mt-1 text-[9px] leading-4 text-slate-600">Voxel count: <span className="mono text-slate-400">{thresholdResult.mask_voxel_count}</span><br />Method: {thresholdResult.provenance.processing_pipeline_version}</div></div> : null}</div></Section>
     <Section title="3D Surface Reconstruction"><div className="space-y-2"><div className="grid grid-cols-2 gap-1.5"><Metric label="Vertices" value={props.surface?.vertex_count ?? "—"} /><Metric label="Triangles" value={props.surface?.triangle_count ?? "—"} /><Metric label="Surface area" value={props.surface?.surface_area_mm2 ? props.surface.surface_area_mm2.toFixed(2) : "—"} unit="mm²" /><Metric label="Derived volume" value={props.surface?.volume_cm3 ? props.surface.volume_cm3.toFixed(3) : "—"} unit="cm³" /></div><div className="rounded border border-slate-900 bg-slate-950/45 p-2 text-[9px] leading-4 text-slate-600">{props.surface?.method ?? "Surface reconstruction unavailable."}</div></div></Section>
     <Section title="AI Model Manager"><div className="space-y-1.5">{props.models.map((model) => <div key={model.model_id} className="rounded border border-slate-900 bg-slate-950/45 p-2"><div className="text-[10px] text-slate-300">{model.model_name}</div><div className="mt-1 flex items-center justify-between"><span className="mono text-[9px] text-slate-600">{model.modality} · {model.body_region}</span><Badge tone="warn">{model.status}</Badge></div></div>)}</div></Section>
