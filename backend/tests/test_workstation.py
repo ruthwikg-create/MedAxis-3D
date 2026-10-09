@@ -528,3 +528,54 @@ def test_synthetic_volume_slice_navigation_across_all_planes(client):
     assert measures.status_code == 200, measures.text
     assert measures.json()["plane"] == "coronal"
     assert measures.json()["index"] == y // 2
+
+
+def test_startup_health_does_not_probe_monai_torch_or_models(client, monkeypatch):
+    """Health and initial UI metadata must remain responsive without ML imports."""
+    from app import main
+
+    def expensive_probe(*_args, **_kwargs):
+        raise AssertionError("Fast startup routes must not probe heavyweight model runtimes")
+
+    monkeypatch.setattr(main.ai_service, "monai_available", expensive_probe)
+    monkeypatch.setattr(main.ai_service, "model_status", expensive_probe)
+    monkeypatch.setattr(main.ai_service, "detected_device", expensive_probe)
+
+    response = client.get("/api/health")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["status"] == "ONLINE"
+    assert payload["capabilities"]["ai_readiness_deferred"] is True
+    assert payload["capabilities"]["ai_models"] is False
+
+    diagnostics = client.get("/api/system/diagnostics")
+    assert diagnostics.status_code == 200, diagnostics.text
+    assert diagnostics.json()["backend"] == "ONLINE"
+    assert "NOT PROBED" in diagnostics.json()["ai_engine"]
+
+    models = client.get("/api/models")
+    assert models.status_code == 200, models.text
+    assert all(model["status"] in {"MODEL NOT DOWNLOADED", "RUNTIME NOT VERIFIED"} for model in models.json())
+
+
+def test_model_catalogue_reports_unverified_installed_bundle_without_importing_monai(client, monkeypatch, tmp_path):
+    """Installed files are distinguished from validated, runnable AI model weights."""
+    from app import main
+
+    model_id = "spleen_ct_segmentation"
+    test_bundle = tmp_path / "spleen"
+    (test_bundle / "configs").mkdir(parents=True)
+    (test_bundle / "models").mkdir()
+    (test_bundle / "configs" / "inference.json").write_text("{}", encoding="utf-8")
+    (test_bundle / "models" / "weights.pt").write_bytes(b"not-real-weights")
+
+    original_model_path = main.ai_service.model_path
+    monkeypatch.setattr(
+        main.ai_service,
+        "model_path",
+        lambda requested_id: test_bundle if requested_id == model_id else original_model_path(requested_id),
+    )
+    response = client.get("/api/models")
+    assert response.status_code == 200, response.text
+    chosen = next(model for model in response.json() if model["model_id"] == model_id)
+    assert chosen["status"] == "RUNTIME NOT VERIFIED"
