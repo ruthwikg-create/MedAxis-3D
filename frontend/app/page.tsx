@@ -161,6 +161,10 @@ export default function Home() {
           volume.shape.some(value => !Number.isInteger(value) || value < 1)) {
         throw new Error("This study has invalid image volume dimensions. Choose another study or generate a new synthetic demo.");
       }
+      // Use the verified volume shape [z, y, x] immediately. Starting at index zero
+      // can show only background noise on a synthetic or clinical research volume.
+      const [z, y, x] = volume.shape;
+      const center = { z: Math.floor((z - 1) / 2), y: Math.floor((y - 1) / 2), x: Math.floor((x - 1) / 2) };
       setActiveCase(detail);
       setMeasurements(null);
       setSurface(null);
@@ -168,8 +172,8 @@ export default function Home() {
       setMpr(null);
       setShowLanding(false);
       setShowCases(false);
-      useAppStore.setState({ workspace: "2D Research Viewer", plane: "axial", position: { z: 0, y: 0, x: 0 }, windowLevel: null, windowWidth: null });
-      await refreshDerived(detail.case_id);
+      useAppStore.setState({ workspace: "2D Research Viewer", plane: "axial", position: center, windowLevel: null, windowWidth: null });
+      await refreshDerived(detail.case_id, volume.shape);
     } catch (error) {
       setToast({ kind: "bad", text: error instanceof Error ? error.message : "Unable to open case." });
     } finally {
@@ -177,16 +181,17 @@ export default function Home() {
     }
   }
 
-  async function refreshDerived(caseId: string) {
+  async function refreshDerived(caseId: string, knownShape?: number[]) {
     try {
-      const volume = await api<{ shape: number[] }>(`/viewer/${encodeURIComponent(caseId)}/volume`);
-      const [z, y, x] = volume.shape;
+      // Refresh does not reset the currently selected slice; use the viewer position.
+      const shape = knownShape ?? (await api<{ shape: number[] }>(`/viewer/${encodeURIComponent(caseId)}/volume`)).shape;
+      const { position } = useAppStore.getState();
+      const [z, y, x] = shape;
       const center = {
-        z: Math.max(0, Math.floor((z - 1) / 2)),
-        y: Math.max(0, Math.floor((y - 1) / 2)),
-        x: Math.max(0, Math.floor((x - 1) / 2)),
+        z: Math.max(0, Math.min(z - 1, position.z)),
+        y: Math.max(0, Math.min(y - 1, position.y)),
+        x: Math.max(0, Math.min(x - 1, position.x)),
       };
-      useAppStore.setState({ position: center });
 
       const [q, s, m, images] = await Promise.allSettled([
         api<QC>(`/qc/${encodeURIComponent(caseId)}`),
