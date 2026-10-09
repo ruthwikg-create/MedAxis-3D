@@ -579,3 +579,55 @@ def test_model_catalogue_reports_unverified_installed_bundle_without_importing_m
     assert response.status_code == 200, response.text
     chosen = next(model for model in response.json() if model["model_id"] == model_id)
     assert chosen["status"] == "RUNTIME NOT VERIFIED"
+
+
+def test_single_verified_nifti_gz_upload_opens_viewer_and_mpr(client, tmp_path):
+    """A single compressed 3D NIfTI volume is a complete valid upload."""
+    nib = pytest.importorskip("nibabel")
+
+    volume = np.arange(8 * 10 * 12, dtype=np.float32).reshape(8, 10, 12)
+    image = nib.Nifti1Image(volume, np.diag([1.25, 1.5, 2.0, 1.0]))
+    path = tmp_path / "la_010.nii.gz"
+    nib.save(image, str(path))
+
+    with path.open("rb") as content:
+        uploaded = client.post(
+            "/api/dicom/import",
+            files={"files": ("la_010.nii.gz", content, "application/gzip")},
+            data={"modality": "MRI"},
+        )
+    assert uploaded.status_code == 200, uploaded.text
+    meta = uploaded.json()
+    assert meta["summary"]["source_type"] == "nifti"
+    assert meta["summary"]["modality"] == "MRI"
+    case_id = meta["case_id"]
+
+    loaded = client.get(f"/api/viewer/{case_id}/volume")
+    assert loaded.status_code == 200, loaded.text
+    assert loaded.json()["shape"] == [12, 10, 8]
+
+    frame = client.get(f"/api/viewer/{case_id}/slice", params={"plane": "axial", "index": 6})
+    assert frame.status_code == 200, frame.text
+    assert frame.headers["content-type"].startswith("image/png")
+    assert frame.content.startswith(bytes.fromhex("89504e470d0a1a0a"))
+
+    mpr = client.get(f"/api/viewer/{case_id}/mpr", params={"z": 6, "y": 5, "x": 4})
+    assert mpr.status_code == 200, mpr.text
+    assert all(mpr.json().get(plane) for plane in ("axial", "sagittal", "coronal"))
+
+
+def test_single_nifti_requires_verified_modality(client, tmp_path):
+    nib = pytest.importorskip("nibabel")
+
+    image = nib.Nifti1Image(np.ones((5, 6, 7), dtype=np.float32), np.eye(4))
+    path = tmp_path / "volume.nii.gz"
+    nib.save(image, str(path))
+
+    with path.open("rb") as content:
+        response = client.post(
+            "/api/dicom/import",
+            files={"files": ("volume.nii.gz", content, "application/gzip")},
+            data={"modality": "AUTO"},
+        )
+    assert response.status_code == 422, response.text
+    assert "modality is ambiguous" in response.text
