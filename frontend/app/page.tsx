@@ -2,6 +2,7 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import BackendStatus from "../components/BackendStatus";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -233,6 +234,7 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
+      <BackendStatus />
       <Link href="/research" className="fixed bottom-5 right-5 z-50 rounded-xl bg-blue-700 text-white border border-blue-400 px-4 py-3 shadow-xl text-sm font-semibold hover:bg-blue-600" aria-label="Open reproducible research experiment workbench">Research Lab ↗</Link>
       <AnimatePresence>
         {showLanding && !activeCase ? (
