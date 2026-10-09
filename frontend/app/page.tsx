@@ -237,6 +237,7 @@ export default function Home() {
       <AnimatePresence>
         {showLanding && !activeCase ? (
           <Landing
+            key="landing"
             onOpen={() => setShowLanding(false)}
             onImport={() => setShowImport(true)}
             onDemo={openDemo}
@@ -275,11 +276,11 @@ export default function Home() {
       ) : null}
 
       <AnimatePresence>
-        {showImport ? <ImportModal onClose={() => setShowImport(false)} onImport={importStudy} /> : null}
-        {showCases ? <CasesModal cases={cases} onClose={() => setShowCases(false)} onOpen={openCase} onError={(message) => setToast({ kind: "bad", text: message })} onDelete={(id) => { setCases((current) => current.filter((item) => item.case_id !== id)); if (activeCase?.case_id === id) { setActiveCase(null); setShowLanding(true); } setToast({ kind: "good", text: "Case deleted from the local development store." }); }} /> : null}
-        {showSettings ? <SettingsModal onClose={() => setShowSettings(false)} /> : null}
-        {showAnalytics ? <AnalyticsSuite activeCase={activeCase} cases={cases} onClose={() => setShowAnalytics(false)} setToast={(value) => setToast(value)} /> : null}
-        {toast ? <ToastView toast={toast} onClose={() => setToast(null)} /> : null}
+        {showImport ? <ImportModal key="import-modal" onClose={() => setShowImport(false)} onImport={importStudy} /> : null}
+        {showCases ? <CasesModal key="cases-modal" cases={cases} onClose={() => setShowCases(false)} onOpen={openCase} onError={(message) => setToast({ kind: "bad", text: message })} onDelete={(id) => { setCases((current) => current.filter((item) => item.case_id !== id)); if (activeCase?.case_id === id) { setActiveCase(null); setShowLanding(true); } setToast({ kind: "good", text: "Case deleted from the local development store." }); }} /> : null}
+        {showSettings ? <SettingsModal key="settings-modal" onClose={() => setShowSettings(false)} /> : null}
+        {showAnalytics ? <AnalyticsSuite key="analytics-modal" activeCase={activeCase} cases={cases} onClose={() => setShowAnalytics(false)} setToast={(value) => setToast(value)} /> : null}
+        {toast ? <ToastView key="toast" toast={toast} onClose={() => setToast(null)} /> : null}
       </AnimatePresence>
     </main>
   );
@@ -605,7 +606,7 @@ function Viewer(props: {
       <div className="flex items-center gap-1"><IconButton label="Toggle left panel" onClick={() => useAppStore.getState().set({ panelLeft: !useAppStore.getState().panelLeft })}><Menu size={15} /></IconButton>{(["axial", "sagittal", "coronal"] as Plane[]).map((plane) => <button key={plane} onClick={() => props.onPlane(plane)} className={`h-8 rounded px-2 text-[10px] uppercase tracking-[.1em] ${props.plane === plane ? "bg-cyan-300/10 text-cyan-100" : "text-slate-500 hover:text-slate-200"}`}>{plane}</button>)}<button onClick={() => props.onWorkspace("4-Panel MPR")} className={`ml-1 inline-flex h-8 items-center gap-1 rounded px-2 text-[10px] ${props.workspace === "4-Panel MPR" ? "bg-cyan-300/10 text-cyan-100" : "text-slate-500"}`}><Grid2X2 size={13} />MPR</button></div>
       <div className="flex items-center gap-1"><button onClick={() => props.onWindowOpen(!props.windowOpen)} className={`h-8 rounded border px-2 text-[10px] ${props.windowOpen ? "border-cyan-400/20 bg-cyan-400/10 text-cyan-100" : "border-slate-800 text-slate-500"}`}>W/L</button><button onClick={() => props.onCine(!props.cine)} className={`h-8 rounded border px-2 text-[10px] ${props.cine ? "border-cyan-400/20 bg-cyan-400/10 text-cyan-100" : "border-slate-800 text-slate-500"}`}>{props.cine ? "Pause" : "Cine"}</button><IconButton label="Reset view" onClick={() => { props.onZoom(1); props.onPan({ x: 0, y: 0 }); }}><Maximize2 size={14} /></IconButton><IconButton label="Toggle right panel" onClick={() => useAppStore.getState().set({ panelRight: !useAppStore.getState().panelRight })}><SlidersHorizontal size={14} /></IconButton></div>
     </div>
-    <AnimatePresence>{props.windowOpen ? <WindowLevelControls activeCase={props.activeCase} onClose={() => props.onWindowOpen(false)} /> : null}</AnimatePresence>
+    <AnimatePresence>{props.windowOpen ? <WindowLevelControls key="window-level" activeCase={props.activeCase} onClose={() => props.onWindowOpen(false)} /> : null}</AnimatePresence>
     <div className="min-h-0 flex-1">{props.workspace === "4-Panel MPR" ? <MPRViewer mpr={props.mpr} dimensions={props.activeCase?.summary?.volume_dimensions ?? [1, 1, 1]} onPosition={(patch) => { const current = useAppStore.getState().position; useAppStore.getState().set({ position: { ...current, ...patch } }); }} /> : props.workspace === "3D Reconstruction" ? <SurfaceViewer surface={props.surface} activeCase={props.activeCase} setToast={props.setToast} /> : props.workspace === "AI Analysis" ? <WorkspaceNotice title="Dataset & AI Analytics" badge="OPEN ANALYTICS SUITE" message="Use the Analytics button for MONAI model management, research radiomics, validation, cardiac/prostate analysis, PI-RADS worksheet, DICOM SEG/SR, RBAC, PostgreSQL/S3 status, and cross-modality synthesis." /> : props.workspace === "Comparison" ? <WorkspaceNotice title="Longitudinal Comparison" badge="USE ANALYTICS SUITE" message="Select two or more compatible studies from Dataset & AI Analytics → Segmentation & metrics to compare metadata and later attach compatible measurements." /> : props.workspace === "Reporting" ? <ReportingWorkspace activeCase={props.activeCase} measurements={props.measurements} qc={props.qc} onExport={props.onExport} onExportSeg={props.onExportSeg} onExportSr={props.onExportSr} /> : props.workspace === "Quantitative Analysis" ? <QuantitativeWorkspace activeCase={props.activeCase} measurements={props.measurements} /> : <SingleViewer {...props} />}</div>
     <div className="h-16 shrink-0 border-t border-slate-800/80 bg-[#080c11] px-3 py-2"><div className="flex items-center justify-between text-[9px] uppercase tracking-[.13em] text-slate-600"><span>Slice navigator</span><span className="mono text-slate-400">{Math.min(props.currentSlice, props.maxSlice) + 1} / {props.maxSlice + 1}</span></div><input aria-label="Slice" type="range" min={0} max={Math.max(0, props.maxSlice)} value={Math.min(props.currentSlice, props.maxSlice)} onChange={(event) => props.onSlice(Number(event.target.value))} className="mt-2 w-full accent-cyan-300" /></div>
   </div>;
