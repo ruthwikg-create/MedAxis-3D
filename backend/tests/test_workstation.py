@@ -438,3 +438,55 @@ def test_dataset_ai_analytics_suite_endpoints(client):
     synthesis = client.get("/api/advanced/synthesis/status")
     assert synthesis.status_code == 200
     assert synthesis.json()["status"] in {"MODEL READY", "MODEL NOT CONFIGURED"}
+
+
+def test_health_endpoint_reports_actual_application(client):
+    response = client.get("/api/health")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["application"] == "MedAxis 3D"
+    assert payload["status"] == "ONLINE"
+    assert isinstance(payload["capabilities"], dict)
+    assert "dicom" in payload["capabilities"]
+
+
+def test_diagnostics_endpoint_has_explicit_auth_mode(client):
+    response = client.get("/api/system/diagnostics")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["backend"] == "ONLINE"
+    assert payload["authentication"] in {"REQUIRED", "DISABLED (development mode)"}
+
+
+def test_readiness_endpoint_discloses_unvalidated_clinical_status(client):
+    response = client.get("/api/system/readiness")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["clinical_validation"] == "NOT ESTABLISHED"
+    assert payload["classification"] == "RESEARCH / EDUCATIONAL USE"
+
+
+def test_synthetic_demo_slice_mpr_and_measurements(client):
+    """Check rendering, not merely whether the demo metadata was created."""
+    response = client.post("/api/cases/demo")
+    assert response.status_code == 200, response.text
+    case_id = response.json()["case_id"]
+    volume = client.get(f"/api/viewer/{case_id}/volume")
+    assert volume.status_code == 200, volume.text
+    shape = volume.json()["shape"]
+    assert len(shape) == 3 and all(axis > 0 for axis in shape)
+
+    slice_response = client.get(f"/api/viewer/{case_id}/slice?plane=axial&index={shape[0] // 2}")
+    assert slice_response.status_code == 200, slice_response.text
+    assert slice_response.headers["content-type"].startswith("image/png")
+    assert slice_response.content.startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+
+    mpr = client.get(f"/api/viewer/{case_id}/mpr?z={shape[0] // 2}&y={shape[1] // 2}&x={shape[2] // 2}")
+    assert mpr.status_code == 200, mpr.text
+    assert all(mpr.json().get(plane) for plane in ("axial", "coronal", "sagittal"))
+
+    measures = client.post("/api/measurements", json={
+        "case_id": case_id, "plane": "axial", "index": shape[0] // 2,
+    })
+    assert measures.status_code == 200, measures.text
+    assert "mean_intensity" in measures.json()

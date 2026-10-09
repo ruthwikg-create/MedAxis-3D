@@ -1,5 +1,63 @@
 export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/api").replace(/\/$/, "");
 
+export class MedAxisApiError extends Error {
+  constructor(message: string, public readonly status: number | null, public readonly endpoint: string) {
+    super(message);
+    this.name = "MedAxisApiError";
+  }
+}
+
+function requestFailure(error: unknown, endpoint: string): MedAxisApiError {
+  if (error instanceof MedAxisApiError) return error;
+  const reason = error instanceof Error ? error.message : String(error);
+  return new MedAxisApiError(
+    `Cannot reach the MedAxis backend at ${API_BASE}. Start the Python FastAPI server on port 8000 and confirm /api/health is reachable. Details: ${reason}`,
+    null,
+    endpoint,
+  );
+}
+
+async function readApiFailure(response: Response): Promise<string> {
+  let detail: unknown = null;
+  try { detail = await response.json(); } catch { detail = null; }
+  if (detail && typeof detail === "object") {
+    const object = detail as Record<string, unknown>;
+    const body = object.detail && typeof object.detail === "object"
+      ? object.detail as Record<string, unknown>
+      : object;
+    const explanation = [body.problem, body.reason, body.recommended_action]
+      .filter((value): value is string => typeof value === "string" && Boolean(value.trim()));
+    if (explanation.length) return explanation.join(" — ");
+    if (typeof object.detail === "string") return object.detail;
+    if (typeof object.message === "string") return object.message;
+  }
+  if (typeof detail === "string" && detail.trim()) return detail;
+  return `HTTP ${response.status} ${response.statusText || "request failed"}`;
+}
+
+export type ApiHealth = {
+  status: string;
+  application: string;
+  version: string;
+  capabilities?: Record<string, boolean>;
+};
+
+export async function checkBackendHealth(): Promise<ApiHealth> {
+  const endpoint = `${API_BASE}/health`;
+  let response: Response;
+  try {
+    response = await fetch(endpoint, { cache: "no-store", signal: AbortSignal.timeout(6000) });
+  } catch (error) {
+    throw requestFailure(error, endpoint);
+  }
+  if (!response.ok) throw new MedAxisApiError(await readApiFailure(response), response.status, endpoint);
+  const payload = await response.json() as ApiHealth;
+  if (!payload || payload.status !== "ONLINE" || payload.application !== "MedAxis 3D") {
+    throw new MedAxisApiError("The server returned an unexpected health response.", response.status, endpoint);
+  }
+  return payload;
+}
+
 export function getAuthToken(): string | null {
   if (typeof window === "undefined") return null;
   return window.localStorage.getItem("medaxis_access_token");
@@ -21,23 +79,15 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
     ...(init?.body && !(init.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
   };
-  const response = await fetch(`${API_BASE}${path}`, { ...init, headers, cache: "no-store" });
-
-  if (!response.ok) {
-    let detail: unknown = null;
-    try { detail = await response.json(); } catch { try { detail = await response.text(); } catch { detail = null; } }
-    let message = `Request failed with HTTP ${response.status}.`;
-    if (typeof detail === "string" && detail.trim()) message = detail;
-    else if (detail && typeof detail === "object") {
-      const object = detail as Record<string, unknown>;
-      const problem = typeof object.problem === "string" ? object.problem : "Request failed";
-      const reason = typeof object.reason === "string" ? object.reason : "";
-      const action = typeof object.recommended_action === "string" ? object.recommended_action : "";
-      message = [problem, reason, action].filter(Boolean).join(" — ");
-      if (!message) message = JSON.stringify(detail);
-    }
-    throw new Error(message);
+  const endpoint = `${API_BASE}${path}`;
+  let response: Response;
+  try {
+    response = await fetch(endpoint, { ...init, headers, cache: "no-store" });
+  } catch (error) {
+    throw requestFailure(error, endpoint);
   }
+
+  if (!response.ok) throw new MedAxisApiError(await readApiFailure(response), response.status, endpoint);
 
   if (response.status === 204) return undefined as T;
   const contentType = response.headers.get("content-type") ?? "";
@@ -47,15 +97,14 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function downloadEndpoint(path: string, filename: string): Promise<void> {
   const token = getAuthToken();
-  const response = await fetch(`${API_BASE}${path}`, { method: "POST", headers: token ? { Authorization: `Bearer ${token}` } : {}, cache: "no-store" });
-  if (!response.ok) {
-    let detail = "Download failed.";
-    try {
-      const json = await response.json();
-      if (json && typeof json === "object") detail = [json.problem, json.reason, json.recommended_action].filter(Boolean).join(" — ") || detail;
-    } catch { /* keep fallback */ }
-    throw new Error(detail);
+  const endpoint = `${API_BASE}${path}`;
+  let response: Response;
+  try {
+    response = await fetch(endpoint, { method: "POST", headers: token ? { Authorization: `Bearer ${token}` } : {}, cache: "no-store" });
+  } catch (error) {
+    throw requestFailure(error, endpoint);
   }
+  if (!response.ok) throw new MedAxisApiError(await readApiFailure(response), response.status, endpoint);
   const blob = await response.blob();
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
