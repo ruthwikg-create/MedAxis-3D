@@ -438,3 +438,29 @@ def test_dataset_ai_analytics_suite_endpoints(client):
     synthesis = client.get("/api/advanced/synthesis/status")
     assert synthesis.status_code == 200
     assert synthesis.json()["status"] in {"MODEL READY", "MODEL NOT CONFIGURED"}
+
+
+def test_health_endpoint_reports_actual_application(client):
+    response = client.get("/api/health")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["application"] == "MedAxis 3D"
+    assert payload["status"] == "ONLINE"
+    assert isinstance(payload["capabilities"], dict)
+    assert "dicom" in payload["capabilities"]
+
+
+def test_diagnostics_endpoint_has_explicit_auth_mode(client):
+    response = client.get("/api/system/diagnostics")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["backend"] == "ONLINE"
+    assert payload["authentication"] in {"REQUIRED", "DISABLED (development mode)"}
+
+
+def test_readiness_endpoint_discloses_unvalidated_clinical_status(client):
+    response = client.get("/api/system/readiness")
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["clinical_validation"] == "NOT ESTABLISHED"
+    assert payload["classification"] == "RESEARCH / EDUCATIONAL USE"
