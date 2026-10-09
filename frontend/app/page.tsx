@@ -131,10 +131,11 @@ export default function Home() {
   const [models, setModels] = useState<ModelRecord[]>([]);
   const [qc, setQc] = useState<QC | null>(null);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
+  const [backendReachable, setBackendReachable] = useState<boolean | null>(null);
   const [loadingCase, setLoadingCase] = useState(false);
   const [demoLoading, setDemoLoading] = useState(false);
 
-  const backendOnline = diagnostics?.backend === "ONLINE";
+  const backendOnline = backendReachable ?? (diagnostics?.backend === "ONLINE");
 
   useEffect(() => {
     const timer = window.setTimeout(() => setReady(true), 850);
@@ -259,7 +260,7 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-[var(--bg)] text-[var(--text)]">
-      <BackendStatus />
+      <BackendStatus onStatusChange={setBackendReachable} />
       <Link href="/research" className="fixed bottom-5 right-5 z-50 rounded-xl bg-blue-700 text-white border border-blue-400 px-4 py-3 shadow-xl text-sm font-semibold hover:bg-blue-600" aria-label="Open reproducible research experiment workbench">Research Lab ↗</Link>
       <AnimatePresence>
         {showLanding && !activeCase ? (

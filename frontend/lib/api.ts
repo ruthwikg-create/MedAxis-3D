@@ -1,4 +1,4 @@
-export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/api").replace(/\/$/, "");
+export const API_BASE = (process.env.NEXT_PUBLIC_API_BASE ?? "http://127.0.0.1:8000/api").replace(/\/$/, "");
 
 export class MedAxisApiError extends Error {
   constructor(message: string, public readonly status: number | null, public readonly endpoint: string) {
@@ -46,8 +46,15 @@ export async function checkBackendHealth(): Promise<ApiHealth> {
   const endpoint = `${API_BASE}/health`;
   let response: Response;
   try {
-    response = await fetch(endpoint, { cache: "no-store", signal: AbortSignal.timeout(6000) });
+    response = await fetch(endpoint, { cache: "no-store", signal: AbortSignal.timeout(12000) });
   } catch (error) {
+    if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) {
+      throw new MedAxisApiError(
+        `The MedAxis backend did not answer its health check within 12 seconds at ${endpoint}. It may still be starting or may be busy. Check the Python CMD window, then open this URL directly and try Retry connection.`,
+        null,
+        endpoint,
+      );
+    }
     throw requestFailure(error, endpoint);
   }
   if (!response.ok) throw new MedAxisApiError(await readApiFailure(response), response.status, endpoint);

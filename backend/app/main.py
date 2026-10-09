@@ -297,7 +297,14 @@ def safe_extract_zip(zip_path: Path, destination: Path) -> None:
 
 @app.get("/api/health")
 def health() -> dict[str, Any]:
+    """Lightweight liveness endpoint: never import PyTorch or probe model weights.
+
+    The frontend polls this route at startup. Full AI availability is assessed
+    separately through model-specific readiness endpoints, since MONAI/Torch
+    initialization may take many seconds on Windows even when the API is healthy.
+    """
     from .services import imaging as imaging_service
+    available = lambda package: importlib.util.find_spec(package) is not None
     return {
         "status": "ONLINE",
         "application": "MedAxis 3D",
@@ -308,16 +315,18 @@ def health() -> dict[str, Any]:
             "nifti": imaging_service.nib is not None,
             "mpr": True,
             "surface": True,
-            "ai_models": any(ai_service.model_status(model_id)["status"] == "MODEL READY" for model_id in ai_service.MODEL_CATALOG),
-            "advanced_ai_runtime": ai_service.monai_available(),
-            "model_runtime": ai_service.monai_available(),
-            "advanced_dicom_seg_export": bool(importlib.util.find_spec("highdicom")) and bool(importlib.util.find_spec("pydicom")),
-            "advanced_dicom_sr_export": bool(importlib.util.find_spec("highdicom")) and bool(importlib.util.find_spec("pydicom")),
-            "cross_modality_runtime": bool(importlib.util.find_spec("torch")) and bool(importlib.util.find_spec("nibabel")),
+            # Conservative status: model readiness must be checked explicitly.
+            "ai_models": False,
+            "advanced_ai_runtime": False,
+            "model_runtime": False,
+            "ai_readiness_deferred": True,
+            "advanced_dicom_seg_export": available("highdicom") and available("pydicom"),
+            "advanced_dicom_sr_export": available("highdicom") and available("pydicom"),
+            "cross_modality_runtime": available("torch") and available("nibabel"),
             "postgis": False,
-            "highdicom": bool(importlib.util.find_spec("highdicom")),
+            "highdicom": available("highdicom"),
             "postgresql": database.db_kind() == "postgresql",
-            "persistence": database.db_kind() == "postgresql" or os.getenv("PERSISTENCE_ENABLED", "").lower() in {"1", "true", "yes", "on"},
+            "persistence": database.persistence_enabled(),
             "s3": object_storage.mode == "S3",
             "auth": auth_required(),
         },
@@ -627,18 +636,33 @@ def segmentation_status(case_id: str, structure: str = "") -> dict[str, Any]:
 
 @app.get("/api/models")
 def models() -> list[dict[str, Any]]:
-    return [
-        {
+    """Fast catalogue listing; expensive model runtime validation is opt-in.
+
+    The UI fetches this route when it loads, often before any model is installed.
+    Importing torch/monai for each catalogue entry slows or blocks the API health
+    response. Users can request /api/models/{model_id}/status for full readiness.
+    """
+    items: list[dict[str, Any]] = []
+    for model_id, info in ai_service.MODEL_CATALOG.items():
+        bundle = ai_service.model_path(model_id)
+        config_dir, weights_dir = bundle / "configs", bundle / "models"
+        has_config = any((config_dir / filename).is_file() for filename in (
+            "inference.json", "inference.yaml", "inference.yml",
+        ))
+        has_weights = weights_dir.is_dir() and any(
+            file.is_file() and file.suffix.lower() in {".pt", ".pth", ".ts"}
+            for file in weights_dir.rglob("*")
+        )
+        items.append({
             "model_id": model_id,
             "model_name": info["display_name"],
             "version": info["version"],
             "modality": info["modality"],
             "body_region": info["body_region"],
-            "status": ai_service.model_status(model_id)["status"],
+            "status": "RUNTIME NOT VERIFIED" if has_config and has_weights else "MODEL NOT DOWNLOADED",
             "validation_status": info["validation_status"],
-        }
-        for model_id, info in ai_service.MODEL_CATALOG.items()
-    ]
+        })
+    return items
 
 
 @app.get("/api/models/{model_id}/status")
@@ -719,15 +743,12 @@ def diagnostics() -> dict[str, Any]:
         "database": "POSTGRESQL" if database.db_kind() == "postgresql" else ("SQLITE PERSISTENCE" if database.persistence_enabled() else "LOCAL FILE STORE (stateless development mode)"),
         "object_storage": object_storage.health(),
         "authentication": "REQUIRED" if auth_required() else "DISABLED (development mode)",
-        "ai_engine": (
-            f"MONAI ONLINE — {len([m for m in ai_service.MODEL_CATALOG if ai_service.model_status(m).get('inference_ready')])} bundle(s) ready"
-            if ai_service.monai_available()
-            else "MONAI OFFLINE — install backend requirements"
-        ),
+        # Deep AI/model readiness is assessed in /api/models/{model_id}/status.
+        "ai_engine": "MODEL RUNTIME NOT PROBED (see AI Analysis for readiness)",
         "dicom_engine": "ONLINE" if imaging_service.pydicom is not None else "OFFLINE — pydicom not installed",
         "nifti_engine": "ONLINE" if imaging_service.nib is not None else "OFFLINE — nibabel not installed",
         "3d_engine": "ONLINE",
-        "gpu": ai_service.detected_device().upper(),
+        "gpu": "NOT PROBED (AI runtime may initialize slowly)",
         "cpu": platform.processor() or platform.machine(),
         "memory": "runtime dependent",
         "storage": str(DATA_DIR.resolve()),
