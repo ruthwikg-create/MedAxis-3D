@@ -464,3 +464,29 @@ def test_readiness_endpoint_discloses_unvalidated_clinical_status(client):
     payload = response.json()
     assert payload["clinical_validation"] == "NOT ESTABLISHED"
     assert payload["classification"] == "RESEARCH / EDUCATIONAL USE"
+
+
+def test_synthetic_demo_slice_mpr_and_measurements(client):
+    """Check rendering, not merely whether the demo metadata was created."""
+    response = client.post("/api/cases/demo")
+    assert response.status_code == 200, response.text
+    case_id = response.json()["case_id"]
+    volume = client.get(f"/api/viewer/{case_id}/volume")
+    assert volume.status_code == 200, volume.text
+    shape = volume.json()["shape"]
+    assert len(shape) == 3 and all(axis > 0 for axis in shape)
+
+    slice_response = client.get(f"/api/viewer/{case_id}/slice?plane=axial&index={shape[0] // 2}")
+    assert slice_response.status_code == 200, slice_response.text
+    assert slice_response.headers["content-type"].startswith("image/png")
+    assert slice_response.content.startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+
+    mpr = client.get(f"/api/viewer/{case_id}/mpr?z={shape[0] // 2}&y={shape[1] // 2}&x={shape[2] // 2}")
+    assert mpr.status_code == 200, mpr.text
+    assert all(mpr.json().get(plane) for plane in ("axial", "coronal", "sagittal"))
+
+    measures = client.post("/api/measurements", json={
+        "case_id": case_id, "plane": "axial", "index": shape[0] // 2,
+    })
+    assert measures.status_code == 200, measures.text
+    assert "mean_intensity" in measures.json()
