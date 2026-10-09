@@ -134,9 +134,14 @@ export default function Home() {
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [backendReachable, setBackendReachable] = useState<boolean | null>(null);
   const [loadingCase, setLoadingCase] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
   const [demoLoading, setDemoLoading] = useState(false);
 
   const backendOnline = backendReachable ?? (diagnostics?.backend === "ONLINE");
+  const openImport = () => {
+    setImportError(null);
+    setShowImport(true);
+  };
 
   useEffect(() => {
     const timer = window.setTimeout(() => setReady(true), 850);
@@ -152,7 +157,7 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  async function openCase(record: CaseRecord) {
+  async function openCase(record: CaseRecord): Promise<boolean> {
     setLoadingCase(true);
     try {
       const detail = await api<CaseRecord>(`/cases/${encodeURIComponent(record.case_id)}`);
@@ -176,8 +181,10 @@ export default function Home() {
       setShowCases(false);
       useAppStore.setState({ workspace: "2D Research Viewer", plane: "axial", position: center, windowLevel: null, windowWidth: null });
       await refreshDerived(detail.case_id, volume.shape);
+      return true;
     } catch (error) {
       setToast({ kind: "bad", text: error instanceof Error ? error.message : "Unable to open case." });
+      return false;
     } finally {
       setLoadingCase(false);
     }
@@ -239,19 +246,29 @@ export default function Home() {
   }
 
   async function importStudy(files: FileList | null, modality: "AUTO" | "CT" | "MRI") {
-    if (!files?.length) return;
+    if (!files?.length || loadingCase) return;
+    const selected = Array.from(files);
     const form = new FormData();
-    Array.from(files).forEach((file) => form.append("files", file));
+    selected.forEach((file) => form.append("files", file));
     form.append("modality", modality);
     setLoadingCase(true);
+    setImportError(null);
     try {
       const imported = await api<CaseRecord>("/dicom/import", { method: "POST", body: form });
       setCases((current) => [imported, ...current.filter((item) => item.case_id !== imported.case_id)]);
+      const opened = await openCase(imported);
+      if (!opened) {
+        setImportError(
+          "The imaging file was imported, but the viewer could not open it. You can retry from Recent Cases. Check that the Python backend is running and that the volume contains a supported 3D image."
+        );
+        return;
+      }
       setShowImport(false);
-      await openCase(imported);
-      setToast({ kind: "good", text: `Imported ${files.length} file${files.length === 1 ? "" : "s"}. Geometry and metadata were parsed server-side.` });
+      setToast({ kind: "good", text: `Imported ${selected.length} file${selected.length === 1 ? "" : "s"} and opened the research viewer.` });
     } catch (error) {
-      setToast({ kind: "bad", text: error instanceof Error ? error.message : "Import failed." });
+      const message = error instanceof Error ? error.message : "The imaging file could not be imported.";
+      setImportError(message);
+      setToast({ kind: "bad", text: message });
     } finally {
       setLoadingCase(false);
     }
@@ -268,7 +285,7 @@ export default function Home() {
           <Landing
             key="landing"
             onOpen={() => setShowLanding(false)}
-            onImport={() => setShowImport(true)}
+            onImport={openImport}
             onDemo={openDemo}
             onCases={() => setShowCases(true)}
             onSettings={() => setShowSettings(true)}
@@ -294,7 +311,7 @@ export default function Home() {
           onOpenCases={() => setShowCases(true)}
           onOpenCase={openCase}
           onDemo={openDemo}
-          onImport={() => setShowImport(true)}
+          onImport={openImport}
           onHome={() => {
             setActiveCase(null);
             setShowLanding(true);
@@ -307,7 +324,7 @@ export default function Home() {
       ) : null}
 
       <AnimatePresence>
-        {showImport ? <ImportModal key="import-modal" onClose={() => setShowImport(false)} onImport={importStudy} /> : null}
+        {showImport ? <ImportModal key="import-modal" onClose={() => { if (!loadingCase) { setShowImport(false); setImportError(null); } }} onImport={importStudy} busy={loadingCase} error={importError} /> : null}
         {showCases ? <CasesModal key="cases-modal" cases={cases} onClose={() => setShowCases(false)} onOpen={openCase} onError={(message) => setToast({ kind: "bad", text: message })} onDelete={(id) => { setCases((current) => current.filter((item) => item.case_id !== id)); if (activeCase?.case_id === id) { setActiveCase(null); setShowLanding(true); } setToast({ kind: "good", text: "Case deleted from the local development store." }); }} /> : null}
         {showSettings ? <SettingsModal key="settings-modal" onClose={() => setShowSettings(false)} /> : null}
         {showAnalytics ? <AnalyticsSuite key="analytics-modal" activeCase={activeCase} cases={cases} onClose={() => setShowAnalytics(false)} setToast={(value) => setToast(value)} /> : null}
@@ -940,19 +957,24 @@ function RightPanel(props: { activeCase: CaseRecord | null; measurements: Measur
 
 function StatusCard({ label, value, tone }: { label: string; value: string; tone: "good" | "warn" | "neutral" | "bad" }) { return <div className="rounded-lg border border-slate-800 bg-slate-950/55 p-2"><div className="text-[9px] uppercase tracking-[.12em] text-slate-600">{label}</div><div className={`mt-1 text-[10px] ${tone === "good" ? "text-emerald-300" : tone === "bad" ? "text-rose-300" : tone === "warn" ? "text-amber-300" : "text-slate-300"}`}>{value}</div></div>; }
 
-function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (files: FileList | null, modality: "AUTO" | "CT" | "MRI") => void }) {
+function ImportModal({ onClose, onImport, busy, error }: {
+  onClose: () => void;
+  onImport: (files: FileList | null, modality: "AUTO" | "CT" | "MRI") => Promise<void>;
+  busy: boolean;
+  error: string | null;
+}) {
   const [drag, setDrag] = useState(false);
   const [modality, setModality] = useState<"AUTO" | "CT" | "MRI">("AUTO");
   const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const files = selectedFiles ? Array.from(selectedFiles) : [];
   const hasNifti = files.some(file => /\.nii(?:\.gz)?$/i.test(file.name));
-  const canImport = files.length > 0 && (!hasNifti || modality !== "AUTO");
+  const canImport = !busy && files.length > 0 && (!hasNifti || modality !== "AUTO");
 
   // Do not auto-upload on file selection. For NIfTI the researcher must state
   // the actual source modality explicitly, not guess it from the extension.
-  const importSelected = () => { if (canImport) onImport(selectedFiles, modality); };
-  const chooseFiles = (list: FileList | null) => { setSelectedFiles(list?.length ? list : null); };
+  const importSelected = () => { if (canImport) void onImport(selectedFiles, modality); };
+  const chooseFiles = (list: FileList | null) => { if (!busy) setSelectedFiles(list?.length ? list : null); };
 
   return <Modal onClose={onClose} title="Import Imaging Study">
     <div className="space-y-4">
@@ -963,7 +985,7 @@ function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (fi
           incompatible declarations will be rejected by the backend.
         </div>
         <label className="text-[10px] uppercase tracking-[.12em] text-slate-400">Dataset modality
-          <select value={modality} onChange={(event) => setModality(event.target.value as typeof modality)}
+          <select disabled={busy} value={modality} onChange={(event) => setModality(event.target.value as typeof modality)}
             className="mt-2 h-10 min-w-36 border border-slate-700 bg-slate-950 px-3 text-sm text-slate-200">
             <option value="AUTO">DICOM / AUTO</option>
             <option value="CT">CT (verified NIfTI)</option>
@@ -976,9 +998,9 @@ function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (fi
         onDragOver={(event) => { event.preventDefault(); setDrag(true); }}
         onDragLeave={() => setDrag(false)}
         onDrop={(event) => { event.preventDefault(); setDrag(false); chooseFiles(event.dataTransfer.files); }}
-        onClick={() => inputRef.current?.click()}
+        onClick={() => { if (!busy) inputRef.current?.click(); }}
         className={`grid min-h-44 cursor-pointer place-items-center rounded-xl border border-dashed outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50 ${drag ? "border-cyan-300/50 bg-cyan-300/[.04]" : "border-slate-700 bg-slate-950/45"} p-6 text-center`}>
-        <input ref={inputRef} type="file" multiple hidden accept=".dcm,.dicom,.nii,.nii.gz,.zip"
+        <input ref={inputRef} type="file" multiple hidden disabled={busy} accept=".dcm,.dicom,.nii,.nii.gz,.zip"
           onClick={(event) => event.stopPropagation()} onChange={(event) => chooseFiles(event.currentTarget.files)} />
         <div>
           <div className="mx-auto grid size-11 place-items-center rounded-xl border border-slate-800 bg-slate-900/70 text-cyan-200"><Upload size={20} /></div>
@@ -992,14 +1014,25 @@ function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (fi
         {files.length > 3 ? ` and ${files.length - 3} more` : ""}
       </div>}
       {hasNifti && modality === "AUTO" && <p role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-5 text-amber-200">
-        NIfTI does not reliably declare CT versus MRI. Choose the verified modality above before importing.
-        No files have been uploaded. If the modality is unknown, do not guess.
+        Your NIfTI file is selected but has not been uploaded. The import button is disabled until you
+        select the actual CT or MRI modality in the dropdown above, using trusted dataset documentation.
+        Do not guess the modality.
+      </p>}
+      {hasNifti && modality !== "AUTO" && !busy && <p role="status" className="rounded-lg border border-cyan-500/30 bg-cyan-500/[.06] p-3 text-xs leading-5 text-cyan-100">
+        Ready to import {files.length} selected file(s) as verified {modality}. Click <strong>Import selected study</strong> to load the volume into the research viewer.
+      </p>}
+      {busy && <p role="status" aria-live="polite" className="rounded-lg border border-cyan-500/30 bg-cyan-500/[.06] p-3 text-xs leading-5 text-cyan-100">
+        Uploading and validating the imaging volume, then opening the viewer. Large NIfTI studies may take some time; please wait.
+      </p>}
+      {error && <p role="alert" className="rounded-lg border border-rose-500/45 bg-rose-500/10 p-3 text-xs leading-5 text-rose-200 break-words">
+        <strong>Import could not finish:</strong> {error}
       </p>}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="max-w-md text-xs text-slate-500">Local research use only. Synthetic or appropriately de-identified data; do not use identifiable clinical images.</p>
         <button type="button" onClick={importSelected} disabled={!canImport}
+          aria-label={busy ? "Importing imaging study" : "Import selected study"}
           className="rounded-lg bg-cyan-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:opacity-40">
-          Import selected study
+          {busy ? "Importing and opening…" : "Import selected study"}
         </button>
       </div>
       <div className="rounded-lg border border-amber-500/20 bg-amber-500/[.04] p-3 text-xs leading-5 text-amber-200/80">
