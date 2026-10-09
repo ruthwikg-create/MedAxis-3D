@@ -198,12 +198,19 @@ export default function Home() {
   }
 
   async function openDemo() {
+    if (demoLoading || loadingCase) return;
     setDemoLoading(true);
     try {
+      const existing = cases.find(item => item.status === "DEMO DATA" && item.case_id);
+      if (existing) {
+        await openCase(existing);
+        setToast({ kind: "good", text: "Opened an existing synthetic research case." });
+        return;
+      }
       const demo = await api<CaseRecord>("/cases/demo", { method: "POST" });
       setCases((current) => [demo, ...current.filter((item) => item.case_id !== demo.case_id)]);
       await openCase(demo);
-      setToast({ kind: "good", text: "Synthetic research phantom loaded. This dataset is explicitly non-clinical." });
+      setToast({ kind: "good", text: "Created a synthetic research phantom and opened it." });
     } catch (error) {
       setToast({ kind: "bad", text: error instanceof Error ? error.message : "Demo case could not be created." });
     } finally {
@@ -264,6 +271,7 @@ export default function Home() {
           qc={qc}
           diagnostics={diagnostics}
           onOpenCases={() => setShowCases(true)}
+          onOpenCase={openCase}
           onDemo={openDemo}
           onImport={() => setShowImport(true)}
           onHome={() => {
@@ -370,6 +378,7 @@ function WorkspaceShell(props: {
   qc: QC | null;
   diagnostics: Diagnostics | null;
   onOpenCases: () => void;
+  onOpenCase: (record: CaseRecord) => void;
   onDemo: () => void;
   onImport: () => void;
   onHome: () => void;
@@ -508,7 +517,7 @@ function WorkspaceShell(props: {
       </header>
 
       <div className="workstation-grid min-h-0 flex-1 grid relative" style={{ "--left-panel": store.panelLeft ? "244px" : "0px", "--right-panel": store.panelRight ? "310px" : "0px" } as React.CSSProperties}>
-        <aside data-open={store.panelLeft} className="workstation-left overflow-hidden border-r border-slate-800/90 bg-[#0a0f14]">{store.panelLeft ? <LeftPanel activeCase={activeCase} cases={cases} onOpenCases={onOpenCases} onImport={onImport} /> : null}</aside>
+        <aside data-open={store.panelLeft} className="workstation-left overflow-hidden border-r border-slate-800/90 bg-[#0a0f14]">{store.panelLeft ? <LeftPanel activeCase={activeCase} cases={cases} onOpenCases={onOpenCases} onOpenCase={props.onOpenCase} onImport={onImport} /> : null}</aside>
         <section className="min-w-0 overflow-hidden bg-[#05080c]">
           {!activeCase ? <EmptyState onDemo={onDemo} onImport={onImport} /> : (
             <Viewer
@@ -559,7 +568,7 @@ function WorkspaceSelect({ value, onChange }: { value: Workspace; onChange: (val
   return <select aria-label="Workspace" value={value} onChange={(event) => onChange(event.target.value as Workspace)} className="hidden h-8 max-w-[170px] border border-slate-800 bg-slate-950 px-2 text-[10px] text-slate-400 outline-none lg:block">{WORKSPACES.map((item) => <option key={item} value={item}>{item}</option>)}</select>;
 }
 
-function LeftPanel(props: { activeCase: CaseRecord | null; cases: CaseRecord[]; onOpenCases: () => void; onImport: () => void }) {
+function LeftPanel(props: { activeCase: CaseRecord | null; cases: CaseRecord[]; onOpenCases: () => void; onOpenCase: (record: CaseRecord) => void; onImport: () => void }) {
   const recent = props.cases.slice(0, 5);
   return <div className="h-full overflow-y-auto">
     <Section title="Study Navigator" action={<button onClick={props.onOpenCases} className="text-cyan-300 hover:text-cyan-100">View</button>}>
@@ -568,7 +577,7 @@ function LeftPanel(props: { activeCase: CaseRecord | null; cases: CaseRecord[]; 
     <Section title="Active Case">
       {props.activeCase ? <div className="space-y-2 rounded-lg border border-slate-800 bg-slate-950/50 p-2.5"><div className="flex items-start justify-between gap-2"><div className="min-w-0"><div className="truncate text-xs font-medium text-slate-100">{props.activeCase.study?.patient_name ?? "Unknown patient"}</div><div className="mono mt-0.5 text-[9px] text-slate-600">{props.activeCase.case_id}</div></div><Badge tone={props.activeCase.status === "DEMO DATA" ? "warn" : "good"}>{props.activeCase.status}</Badge></div><div className="grid grid-cols-2 gap-1.5 pt-1"><MiniKV k="Modality" v={props.activeCase.summary?.modality ?? "—"} /><MiniKV k="Source" v={props.activeCase.summary?.source_type ?? "—"} /><MiniKV k="Matrix" v={(props.activeCase.summary?.volume_dimensions ?? []).slice(0, 2).join(" × ") || "—"} /><MiniKV k="Slices" v={String(props.activeCase.summary?.volume_dimensions?.[2] ?? "—")} /></div></div> : <div className="text-xs text-slate-600">No case loaded.</div>}
     </Section>
-    <Section title="Recent Studies"><div className="space-y-1">{recent.length ? recent.map((item) => <div key={item.case_id} className="rounded-md border border-slate-900 bg-slate-950/40 px-2.5 py-2"><div className="truncate text-[10px] text-slate-300">{item.study?.study_description ?? item.case_id}</div><div className="mt-1 flex justify-between text-[9px] text-slate-600"><span>{item.study?.modality ?? "—"}</span><span>{item.status}</span></div></div>) : <div className="text-[10px] text-slate-600">No recent cases.</div>}</div></Section>
+    <Section title="Recent Studies"><div className="space-y-1">{recent.length ? recent.map((item) => <button key={item.case_id} type="button" onClick={() => props.onOpenCase(item)} aria-label={`Open study ${item.study?.study_description ?? item.case_id}`} className="block w-full rounded-md border border-slate-900 bg-slate-950/40 px-2.5 py-2 text-left hover:border-cyan-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-cyan-400"><div className="truncate text-[10px] text-slate-300">{item.study?.study_description ?? item.case_id}</div><div className="mt-1 flex justify-between text-[9px] text-slate-500"><span>{item.study?.modality ?? "—"}</span><span>{item.status} · Open ↗</span></div></button>) : <div className="text-[10px] text-slate-600">No recent cases.</div>}</div></Section>
     <Section title="Keyboard"><div className="grid grid-cols-2 gap-1.5">{[["W", "Window/Level"], ["Z", "Zoom"], ["P", "Pan"], ["R", "Reset"], ["3", "3D"], ["Space", "Cine"]].map(([key, label]) => <div key={key} className="flex items-center gap-2 rounded border border-slate-900 bg-slate-950/35 px-2 py-1.5"><kbd className="mono rounded border border-slate-800 bg-slate-900 px-1 text-[9px] text-slate-400">{key}</kbd><span className="text-[9px] text-slate-600">{label}</span></div>)}</div></Section>
     <Section title="Data Integrity"><HelpRow icon={ShieldCheck} label="Source provenance" value="tracked" /><HelpRow icon={Info} label="Synthetic data" value={props.activeCase?.status === "DEMO DATA" ? "YES" : "NO"} /><HelpRow icon={Archive} label="Audit trail" value="enabled" /></Section>
   </div>;
