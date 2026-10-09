@@ -154,6 +154,13 @@ export default function Home() {
     setLoadingCase(true);
     try {
       const detail = await api<CaseRecord>(`/cases/${encodeURIComponent(record.case_id)}`);
+      // A persisted case record is not proof that its underlying image files still exist.
+      // Verify the volume before activating the viewer.
+      const volume = await api<{ shape: number[] }>(`/viewer/${encodeURIComponent(detail.case_id)}/volume`);
+      if (!Array.isArray(volume.shape) || volume.shape.length !== 3 ||
+          volume.shape.some(value => !Number.isInteger(value) || value < 1)) {
+        throw new Error("This study has invalid image volume dimensions. Choose another study or generate a new synthetic demo.");
+      }
       setActiveCase(detail);
       setMeasurements(null);
       setSurface(null);
@@ -203,9 +210,15 @@ export default function Home() {
     try {
       const existing = cases.find(item => item.status === "DEMO DATA" && item.case_id);
       if (existing) {
-        await openCase(existing);
-        setToast({ kind: "good", text: "Opened an existing synthetic research case." });
-        return;
+        try {
+          // Old database records may outlive local NIfTI files; in that case generate a fresh demo.
+          await api<{ shape: number[] }>(`/viewer/${encodeURIComponent(existing.case_id)}/volume`);
+          await openCase(existing);
+          setToast({ kind: "good", text: "Opened an existing synthetic research case." });
+          return;
+        } catch {
+          setCases(current => current.filter(item => item.case_id !== existing.case_id));
+        }
       }
       const demo = await api<CaseRecord>("/cases/demo", { method: "POST" });
       setCases((current) => [demo, ...current.filter((item) => item.case_id !== demo.case_id)]);
