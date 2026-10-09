@@ -579,3 +579,60 @@ def test_model_catalogue_reports_unverified_installed_bundle_without_importing_m
     assert response.status_code == 200, response.text
     chosen = next(model for model in response.json() if model["model_id"] == model_id)
     assert chosen["status"] == "RUNTIME NOT VERIFIED"
+
+
+
+@pytest.mark.parametrize("source_modality", ["CT", "MRI"])
+def test_single_nifti_file_upload_opens_as_verified_modality(client, tmp_path: Path, source_modality: str):
+    """A single actual 3D NIfTI file can be imported when source modality is known."""
+    nib = pytest.importorskip("nibabel")
+    source = tmp_path / "la_010.nii.gz"
+    volume = np.arange(4 * 5 * 6, dtype=np.float32).reshape((4, 5, 6))
+    nib.save(nib.Nifti1Image(volume, np.diag([1.1, 1.2, 1.3, 1])), str(source))
+
+    result = client.post(
+        "/api/dicom/import",
+        data={"modality": source_modality},
+        files={"files": (source.name, source.read_bytes(), "application/gzip")},
+    )
+    assert result.status_code == 200, result.text
+    case_id = result.json()["case_id"]
+    assert result.json()["files"] == [source.name]
+    assert result.json()["study"]["modality"] == source_modality
+
+    image = client.get(f"/api/viewer/{case_id}/volume")
+    assert image.status_code == 200, image.text
+    assert image.json()["shape"] == [6, 5, 4]
+    assert image.json()["modality"] == source_modality
+
+
+def test_single_nifti_without_verified_modality_has_actionable_error(client, tmp_path: Path):
+    """Unknown NIfTI modality must never be silently assumed."""
+    nib = pytest.importorskip("nibabel")
+    source = tmp_path / "unknown.nii.gz"
+    nib.save(nib.Nifti1Image(np.ones((4, 5, 6), dtype=np.float32), np.eye(4)), str(source))
+    result = client.post(
+        "/api/dicom/import",
+        data={"modality": "AUTO"},
+        files={"files": (source.name, source.read_bytes(), "application/gzip")},
+    )
+    assert result.status_code == 422, result.text
+    assert "Select CT or MRI" in result.text
+
+
+def test_multiple_nifti_volumes_are_not_silently_merged(client, tmp_path: Path):
+    """Only one NIfTI source can be imported per case, even through the raw API."""
+    nib = pytest.importorskip("nibabel")
+    source = tmp_path / "scan.nii.gz"
+    nib.save(nib.Nifti1Image(np.ones((4, 5, 6), dtype=np.float32), np.eye(4)), str(source))
+    payload = source.read_bytes()
+    result = client.post(
+        "/api/dicom/import",
+        data={"modality": "MRI"},
+        files=[
+            ("files", ("first.nii.gz", payload, "application/gzip")),
+            ("files", ("second.nii.gz", payload, "application/gzip")),
+        ],
+    )
+    assert result.status_code == 422, result.text
+    assert "Multiple NIfTI volumes" in result.text
