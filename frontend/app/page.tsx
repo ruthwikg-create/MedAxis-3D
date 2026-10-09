@@ -831,7 +831,7 @@ function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (fi
         onClick={() => inputRef.current?.click()}
         className={`grid min-h-44 cursor-pointer place-items-center rounded-xl border border-dashed outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50 ${drag ? "border-cyan-300/50 bg-cyan-300/[.04]" : "border-slate-700 bg-slate-950/45"} p-6 text-center`}>
         <input ref={inputRef} type="file" multiple hidden accept=".dcm,.dicom,.nii,.nii.gz,.zip"
-          onChange={(event) => chooseFiles(event.currentTarget.files)} />
+          onClick={(event) => event.stopPropagation()} onChange={(event) => chooseFiles(event.currentTarget.files)} />
         <div>
           <div className="mx-auto grid size-11 place-items-center rounded-xl border border-slate-800 bg-slate-900/70 text-cyan-200"><Upload size={20} /></div>
           <div className="mt-3 text-sm text-slate-200">Choose or drop DICOM, NIfTI, or DICOM ZIP</div>
