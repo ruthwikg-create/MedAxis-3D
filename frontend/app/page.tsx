@@ -152,7 +152,7 @@ export default function Home() {
     return () => window.clearTimeout(timer);
   }, [toast]);
 
-  async function openCase(record: CaseRecord) {
+  async function openCase(record: CaseRecord): Promise<boolean> {
     setLoadingCase(true);
     try {
       const detail = await api<CaseRecord>(`/cases/${encodeURIComponent(record.case_id)}`);
@@ -175,9 +175,14 @@ export default function Home() {
       setShowLanding(false);
       setShowCases(false);
       useAppStore.setState({ workspace: "2D Research Viewer", plane: "axial", position: center, windowLevel: null, windowWidth: null });
-      await refreshDerived(detail.case_id, volume.shape);
+      // The viewer is ready once the volume is verified. Derived QC, MPR,
+      // and 3D reconstruction may be expensive for large imported datasets;
+      // keep them asynchronous so the study becomes usable immediately.
+      void refreshDerived(detail.case_id, volume.shape);
+      return true;
     } catch (error) {
       setToast({ kind: "bad", text: error instanceof Error ? error.message : "Unable to open case." });
+      return false;
     } finally {
       setLoadingCase(false);
     }
@@ -238,20 +243,24 @@ export default function Home() {
     }
   }
 
-  async function importStudy(files: FileList | null, modality: "AUTO" | "CT" | "MRI") {
-    if (!files?.length) return;
+  async function importStudy(files: File[], modality: "AUTO" | "CT" | "MRI"): Promise<void> {
+    if (files.length === 0) throw new Error("Select one NIfTI volume or a DICOM series first.");
     const form = new FormData();
-    Array.from(files).forEach((file) => form.append("files", file));
+    files.forEach((file) => form.append("files", file, file.name));
     form.append("modality", modality);
     setLoadingCase(true);
     try {
       const imported = await api<CaseRecord>("/dicom/import", { method: "POST", body: form });
       setCases((current) => [imported, ...current.filter((item) => item.case_id !== imported.case_id)]);
+      // Close only after the server accepted and validated the upload. Failed
+      // uploads leave the selected files available for removal and retry.
       setShowImport(false);
-      await openCase(imported);
-      setToast({ kind: "good", text: `Imported ${files.length} file${files.length === 1 ? "" : "s"}. Geometry and metadata were parsed server-side.` });
-    } catch (error) {
-      setToast({ kind: "bad", text: error instanceof Error ? error.message : "Import failed." });
+      const opened = await openCase(imported);
+      if (opened) {
+        setToast({ kind: "good", text: `Imported ${files.length} file${files.length === 1 ? "" : "s"} and opened the research viewer.` });
+      }
+      // openCase explains any viewer failure and keeps the imported record
+      // in Recent Cases, avoiding a misleading 'import failed' re-upload.
     } finally {
       setLoadingCase(false);
     }
@@ -940,71 +949,195 @@ function RightPanel(props: { activeCase: CaseRecord | null; measurements: Measur
 
 function StatusCard({ label, value, tone }: { label: string; value: string; tone: "good" | "warn" | "neutral" | "bad" }) { return <div className="rounded-lg border border-slate-800 bg-slate-950/55 p-2"><div className="text-[9px] uppercase tracking-[.12em] text-slate-600">{label}</div><div className={`mt-1 text-[10px] ${tone === "good" ? "text-emerald-300" : tone === "bad" ? "text-rose-300" : tone === "warn" ? "text-amber-300" : "text-slate-300"}`}>{value}</div></div>; }
 
-function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (files: FileList | null, modality: "AUTO" | "CT" | "MRI") => void }) {
+
+function ImportModal({ onClose, onImport }: {
+  onClose: () => void;
+  onImport: (files: File[], modality: "AUTO" | "CT" | "MRI") => Promise<void>;
+}) {
   const [drag, setDrag] = useState(false);
   const [modality, setModality] = useState<"AUTO" | "CT" | "MRI">("AUTO");
-  const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [fileSearch, setFileSearch] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const files = selectedFiles ? Array.from(selectedFiles) : [];
-  const hasNifti = files.some(file => /\.nii(?:\.gz)?$/i.test(file.name));
-  const canImport = files.length > 0 && (!hasNifti || modality !== "AUTO");
 
-  // Do not auto-upload on file selection. For NIfTI the researcher must state
-  // the actual source modality explicitly, not guess it from the extension.
-  const importSelected = () => { if (canImport) onImport(selectedFiles, modality); };
-  const chooseFiles = (list: FileList | null) => { setSelectedFiles(list?.length ? list : null); };
+  // A study can have many DICOM slices, but at most one NIfTI volume or ZIP.
+  // The backend cannot combine arbitrary NIfTI volumes or archive sources.
+  const hasNifti = selectedFiles.some(file => /\.nii(?:\.gz)?$/i.test(file.name));
+  const hasZip = selectedFiles.some(file => /\.zip$/i.test(file.name));
+  const mixedSelection = (hasNifti || hasZip) && selectedFiles.length > 1;
+  const modalityMissing = hasNifti && modality === "AUTO";
+  const canImport = selectedFiles.length > 0 && !mixedSelection && !modalityMissing && !importing;
+  const totalBytes = selectedFiles.reduce((sum, file) => sum + file.size, 0);
+  const formatSize = (size: number) => size < 1024
+    ? `${size} B`
+    : size < 1024 * 1024
+      ? `${(size / 1024).toFixed(1)} KB`
+      : `${(size / (1024 * 1024)).toFixed(1)} MB`;
 
-  return <Modal onClose={onClose} title="Import Imaging Study">
-    <div className="space-y-4">
+  const addFiles = (list: FileList | null) => {
+    if (importing || !list?.length) return;
+    // Add instead of replace. The picker input is cleared so the same file can
+    // be picked again after being discarded.
+    const incoming = Array.from(list);
+    setSelectedFiles(current => {
+      const keys = new Set(current.map(file => `${file.name}\u0000${file.size}\u0000${file.lastModified}\u0000${file.webkitRelativePath}`));
+      const next = [...current];
+      for (const file of incoming) {
+        const key = `${file.name}\u0000${file.size}\u0000${file.lastModified}\u0000${file.webkitRelativePath}`;
+        if (!keys.has(key)) {
+          keys.add(key);
+          next.push(file);
+        }
+      }
+      return next;
+    });
+    setImportError(null);
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
+  const discardFile = (index: number) => {
+    if (importing) return;
+    setSelectedFiles(current => current.filter((_, fileIndex) => fileIndex !== index));
+    setImportError(null);
+  };
+
+  const clearFiles = () => {
+    if (importing) return;
+    setSelectedFiles([]);
+    setFileSearch("");
+    setModality("AUTO");
+    setImportError(null);
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
+  const importSelected = async () => {
+    if (!canImport) return;
+    setImporting(true);
+    setImportError(null);
+    try {
+      await onImport(selectedFiles, modality);
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "Upload failed. Check the backend and try again.");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const visibleFiles = selectedFiles
+    .map((file, index) => ({ file, index }))
+    .filter(({ file }) => file.name.toLowerCase().includes(fileSearch.trim().toLowerCase()));
+  const shownFiles = visibleFiles.slice(0, 120);
+  const closeSafely = () => { if (!importing) onClose(); };
+
+  return <Modal onClose={closeSafely} title="Import Imaging Study">
+    <div className="max-h-[min(78vh,690px)] space-y-4 overflow-y-auto pr-1">
       <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
         <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-xs leading-5 text-slate-400">
-          <strong className="text-slate-200">Confirm imaging modality before upload.</strong> For NIfTI files,
-          select CT or MRI from trusted dataset information. DICOM modality is read from source metadata;
-          incompatible declarations will be rejected by the backend.
+          <strong className="text-slate-200">Choose a complete research study.</strong> One 3D NIfTI file is supported.
+          For NIfTI, confirm CT or MRI using trusted dataset documentation. DICOM files must belong to one compatible series.
         </div>
         <label className="text-[10px] uppercase tracking-[.12em] text-slate-400">Dataset modality
-          <select value={modality} onChange={(event) => setModality(event.target.value as typeof modality)}
-            className="mt-2 h-10 min-w-36 border border-slate-700 bg-slate-950 px-3 text-sm text-slate-200">
+          <select value={modality} disabled={importing}
+            onChange={(event) => { setModality(event.target.value as typeof modality); setImportError(null); }}
+            className="mt-2 h-10 min-w-36 border border-slate-700 bg-slate-950 px-3 text-sm text-slate-200 disabled:opacity-50">
             <option value="AUTO">DICOM / AUTO</option>
-            <option value="CT">CT (verified NIfTI)</option>
-            <option value="MRI">MRI (verified NIfTI)</option>
+            <option value="CT">CT (verified source)</option>
+            <option value="MRI">MRI (verified source)</option>
           </select>
         </label>
       </div>
-      <div role="button" tabIndex={0} aria-label="Choose local DICOM or NIfTI study files"
-        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); inputRef.current?.click(); } }}
-        onDragOver={(event) => { event.preventDefault(); setDrag(true); }}
+
+      <div role="button" tabIndex={importing ? -1 : 0} aria-disabled={importing}
+        aria-label="Add local DICOM NIfTI or ZIP imaging files"
+        onKeyDown={(event) => { if (!importing && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); inputRef.current?.click(); } }}
+        onDragOver={(event) => { event.preventDefault(); if (!importing) setDrag(true); }}
         onDragLeave={() => setDrag(false)}
-        onDrop={(event) => { event.preventDefault(); setDrag(false); chooseFiles(event.dataTransfer.files); }}
-        onClick={() => inputRef.current?.click()}
-        className={`grid min-h-44 cursor-pointer place-items-center rounded-xl border border-dashed outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50 ${drag ? "border-cyan-300/50 bg-cyan-300/[.04]" : "border-slate-700 bg-slate-950/45"} p-6 text-center`}>
-        <input ref={inputRef} type="file" multiple hidden accept=".dcm,.dicom,.nii,.nii.gz,.zip"
-          onClick={(event) => event.stopPropagation()} onChange={(event) => chooseFiles(event.currentTarget.files)} />
+        onDrop={(event) => { event.preventDefault(); setDrag(false); addFiles(event.dataTransfer.files); }}
+        onClick={() => { if (!importing) inputRef.current?.click(); }}
+        className={`grid min-h-36 place-items-center rounded-xl border border-dashed p-5 text-center outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50 ${drag ? "border-cyan-300/50 bg-cyan-300/[.04]" : "border-slate-700 bg-slate-950/45"} ${importing ? "cursor-wait opacity-70" : "cursor-pointer"}`}>
+        <input ref={inputRef} type="file" multiple hidden disabled={importing}
+          accept=".dcm,.dicom,.nii,.nii.gz,.zip,application/dicom"
+          onClick={(event) => event.stopPropagation()}
+          onChange={(event) => addFiles(event.currentTarget.files)} />
         <div>
           <div className="mx-auto grid size-11 place-items-center rounded-xl border border-slate-800 bg-slate-900/70 text-cyan-200"><Upload size={20} /></div>
-          <div className="mt-3 text-sm text-slate-200">Choose or drop DICOM, NIfTI, or DICOM ZIP</div>
+          <div className="mt-3 text-sm text-slate-200">{selectedFiles.length ? "Add more files to selection" : "Choose or drop DICOM, NIfTI, or ZIP"}</div>
           <div className="mt-1 text-xs text-slate-500">.dcm · .dicom · .nii · .nii.gz · .zip</div>
-          <div className="mt-2 text-xs text-cyan-200">{files.length ? `${files.length} file(s) selected` : "Nothing uploaded yet"}</div>
+          <div role="status" className="mt-2 text-xs text-cyan-200">
+            {selectedFiles.length ? `${selectedFiles.length} selected · ${formatSize(totalBytes)} total` : "Nothing uploaded yet"}
+          </div>
         </div>
       </div>
-      {files.length > 0 && <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300" role="status">
-        <span className="font-medium">Selection:</span> {files.slice(0, 3).map(file => file.name).join(", ")}
-        {files.length > 3 ? ` and ${files.length - 3} more` : ""}
-      </div>}
-      {hasNifti && modality === "AUTO" && <p role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-5 text-amber-200">
-        NIfTI does not reliably declare CT versus MRI. Choose the verified modality above before importing.
-        No files have been uploaded. If the modality is unknown, do not guess.
+
+      {selectedFiles.length > 0 && <section className="rounded-lg border border-slate-800 bg-slate-950/40 p-3" aria-label="Staged files">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <div className="text-xs font-medium text-slate-200">Staged files ({selectedFiles.length})</div>
+          <button type="button" onClick={clearFiles} disabled={importing}
+            className="rounded border border-red-500/25 px-2.5 py-1 text-xs text-red-300 hover:bg-red-500/10 disabled:opacity-40">
+            Clear all
+          </button>
+        </div>
+        {selectedFiles.length > 12 && <label className="mb-2 block text-xs text-slate-400">
+          Find a file to discard
+          <input type="search" value={fileSearch} onChange={event => setFileSearch(event.target.value)}
+            placeholder="Search filename…" disabled={importing}
+            className="mt-1 w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-slate-200 outline-none focus:border-cyan-400/50" />
+        </label>}
+        <div className="max-h-44 space-y-1 overflow-y-auto" role="list" aria-label="Selected files">
+          {shownFiles.map(({ file, index }) => (
+            <div key={`${file.name}-${file.size}-${file.lastModified}-${index}`} role="listitem"
+              className="flex items-center gap-2 rounded-md border border-slate-800/70 bg-[#0c141d] px-2.5 py-2">
+              <FileImage size={15} className="shrink-0 text-cyan-300/70" />
+              <span title={file.name} className="min-w-0 flex-1 truncate text-xs text-slate-200">{file.name}</span>
+              <span className="shrink-0 text-[10px] text-slate-500">{formatSize(file.size)}</span>
+              <button type="button" onClick={() => discardFile(index)} disabled={importing}
+                aria-label={`Discard ${file.name} from selected files`}
+                className="shrink-0 rounded border border-slate-700 px-2 py-1 text-[11px] text-slate-300 hover:border-red-400/40 hover:bg-red-500/10 hover:text-red-200 disabled:opacity-40">
+                Discard
+              </button>
+            </div>
+          ))}
+        </div>
+        {visibleFiles.length === 0 && <p className="mt-2 text-xs text-slate-400">No files match this search.</p>}
+        {visibleFiles.length > shownFiles.length && <p className="mt-2 text-xs text-slate-400">
+          Showing {shownFiles.length} of {visibleFiles.length} matching files. Search by filename to discard another.
+        </p>}
+        <p className="mt-2 text-[11px] text-slate-500">Discarding only removes the file from this upload queue; it does not delete the file on your computer.</p>
+      </section>}
+
+      {mixedSelection && <p role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-5 text-amber-200">
+        Upload one NIfTI volume or one ZIP archive by itself. To import multiple files together, select compatible DICOM slices only.
+        Discard the extra files above or use Clear all.
       </p>}
+      {modalityMissing && !mixedSelection && <p role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-5 text-amber-200">
+        One NIfTI file is selected and ready to stage. The import button will enable when you select its verified CT or MRI modality above.
+        No files have been uploaded yet. Do not guess if the modality is unknown.
+      </p>}
+      {!selectedFiles.length && <p className="text-xs text-slate-400">Select one 3D NIfTI file, one ZIP archive, or a set of DICOM slices from the same series.</p>}
+
+      {importError && <div role="alert" className="rounded-lg border border-red-500/45 bg-red-500/10 p-3 text-xs leading-5 text-red-200">
+        <strong className="block">Import failed — no new study was opened.</strong>
+        <span className="break-words">{importError}</span>
+        <p className="mt-1 text-red-100/70">You can discard a file, correct the modality, and retry without reselecting everything.</p>
+      </div>}
+
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="max-w-md text-xs text-slate-500">Local research use only. Synthetic or appropriately de-identified data; do not use identifiable clinical images.</p>
-        <button type="button" onClick={importSelected} disabled={!canImport}
-          className="rounded-lg bg-cyan-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:opacity-40">
-          Import selected study
+        <p className="max-w-sm text-xs text-slate-500">Research use only. Import appropriately de-identified images. Selected local files are not sent until you press Import.</p>
+        <button type="button" onClick={() => void importSelected()} disabled={!canImport}
+          aria-busy={importing}
+          className="inline-flex items-center gap-2 rounded-lg bg-cyan-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:opacity-40">
+          {importing && <RefreshCw size={15} className="animate-spin" />}
+          {importing ? "Uploading and validating…" : "Import selected study"}
         </button>
       </div>
-      <div className="rounded-lg border border-amber-500/20 bg-amber-500/[.04] p-3 text-xs leading-5 text-amber-200/80">
-        Mixed series, invalid geometry, unsupported multiframe images and malformed archives remain rejected by server-side checks.
-      </div>
+      {importing && <p role="status" className="text-xs text-cyan-200">
+        Keep this window open while the backend validates imaging geometry. Large 3D volumes can take time.
+      </p>}
+      <p className="rounded-lg border border-amber-500/20 bg-amber-500/[.04] p-3 text-xs leading-5 text-amber-200/80">
+        Mixed DICOM series, invalid geometry, unsupported multiframe images, and malformed archives are rejected by server-side checks.
+      </p>
     </div>
   </Modal>;
 }
