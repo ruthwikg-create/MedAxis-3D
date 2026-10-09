@@ -3,6 +3,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import BackendStatus from "../components/BackendStatus";
+import HeroImagingPreview from "../components/HeroImagingPreview";
 import { Canvas } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -369,16 +370,7 @@ function Landing(props: { onOpen: () => void; onImport: () => void; onDemo: () =
               {["2D viewer", "MPR", "3D surface", "Quantitative"].map((item) => <div key={item}><div className="text-[9px] uppercase tracking-[.16em] text-slate-600">Core</div><div className="mt-1 text-xs text-slate-300">{item}</div></div>)}
             </div>
           </div>
-          <div className="relative min-h-[440px] rounded-2xl border border-slate-800 bg-[#0b1016]/80 p-3 shadow-2xl">
-            <div className="relative h-full overflow-hidden rounded-xl bg-[#070b10] scan-grid">
-              <div className="absolute inset-x-5 top-5 flex items-center justify-between text-[9px] uppercase tracking-[.18em] text-slate-600"><span>Source / geometry / analysis</span><span>DATA-DERIVED</span></div>
-              <div className="absolute inset-14 rounded-full border border-cyan-300/10" />
-              <div className="absolute left-1/2 top-1/2 h-56 w-56 -translate-x-1/2 -translate-y-1/2 rounded-full border border-cyan-300/15 shadow-[0_0_80px_rgba(98,211,255,.06)]" />
-              <div className="absolute left-1/2 top-1/2 h-32 w-44 -translate-x-1/2 -translate-y-1/2 rounded-[40%] border border-cyan-200/20 bg-cyan-200/[.03]" />
-              <div className="absolute left-[22%] top-[28%] h-px w-[56%] bg-cyan-300/20" /><div className="absolute left-1/2 top-[20%] h-[60%] w-px bg-cyan-300/20" />
-              <div className="absolute bottom-5 left-5 right-5 grid grid-cols-3 gap-2">{["SOURCE", "GEOMETRY", "ANALYSIS"].map((item, index) => <div key={item} className="rounded border border-slate-800 bg-slate-950/65 px-2 py-2"><div className="text-[8px] tracking-[.16em] text-slate-600">{item}</div><div className="mt-1 mono text-[10px] text-slate-300">{index === 0 ? "DICOM / NIfTI" : index === 1 ? "MPR READY" : "NO FABRICATED VALUES"}</div></div>)}</div>
-            </div>
-          </div>
+          <HeroImagingPreview />
         </div>
         <footer className="flex flex-col gap-1 border-t border-slate-800/80 pt-4 text-[9px] uppercase tracking-[.12em] text-slate-600 sm:flex-row sm:items-center sm:justify-between"><span>Advanced Multimodal Medical Imaging & 3D Analysis Workstation</span><span>Created By: <span className="text-slate-400">Ruthwik Goparaju</span></span></footer>
       </div>
