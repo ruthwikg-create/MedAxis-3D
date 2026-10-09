@@ -490,3 +490,41 @@ def test_synthetic_demo_slice_mpr_and_measurements(client):
     })
     assert measures.status_code == 200, measures.text
     assert "mean_intensity" in measures.json()
+
+
+def test_synthetic_volume_slice_navigation_across_all_planes(client):
+    """All three slice axes must be accessible and produce distinct research images."""
+    created = client.post("/api/cases/demo")
+    assert created.status_code == 200, created.text
+    case_id = created.json()["case_id"]
+    volume = client.get(f"/api/viewer/{case_id}/volume")
+    assert volume.status_code == 200, volume.text
+    z, y, x = volume.json()["shape"]
+    assert z >= 3 and y >= 3 and x >= 3
+
+    for plane, dimension in (("axial", z), ("coronal", y), ("sagittal", x)):
+        indices = (0, dimension // 2, dimension - 1)
+        images = []
+        for index in indices:
+            response = client.get(
+                f"/api/viewer/{case_id}/slice",
+                params={"plane": plane, "index": index},
+            )
+            assert response.status_code == 200, (plane, index, response.text)
+            assert response.headers["content-type"].startswith("image/png")
+            assert response.content.startswith(b"\\x89PNG\\r\\n\\x1a\\n")
+            images.append(response.content)
+        # Synthetic volume has z/x/y variation; this detects a stuck slice index.
+        assert len(set(images)) >= 2, f"{plane} slices did not change"
+
+    center = {"z": z // 2, "y": y // 2, "x": x // 2}
+    mpr = client.get(f"/api/viewer/{case_id}/mpr", params=center)
+    assert mpr.status_code == 200, mpr.text
+    assert mpr.json()["position"] == center
+
+    measures = client.post("/api/measurements", json={
+        "case_id": case_id, "plane": "coronal", "index": y // 2,
+    })
+    assert measures.status_code == 200, measures.text
+    assert measures.json()["plane"] == "coronal"
+    assert measures.json()["index"] == y // 2

@@ -161,6 +161,10 @@ export default function Home() {
           volume.shape.some(value => !Number.isInteger(value) || value < 1)) {
         throw new Error("This study has invalid image volume dimensions. Choose another study or generate a new synthetic demo.");
       }
+      // Use the verified volume shape [z, y, x] immediately. Starting at index zero
+      // can show only background noise on a synthetic or clinical research volume.
+      const [z, y, x] = volume.shape;
+      const center = { z: Math.floor((z - 1) / 2), y: Math.floor((y - 1) / 2), x: Math.floor((x - 1) / 2) };
       setActiveCase(detail);
       setMeasurements(null);
       setSurface(null);
@@ -168,8 +172,8 @@ export default function Home() {
       setMpr(null);
       setShowLanding(false);
       setShowCases(false);
-      useAppStore.setState({ workspace: "2D Research Viewer", plane: "axial", position: { z: 0, y: 0, x: 0 }, windowLevel: null, windowWidth: null });
-      await refreshDerived(detail.case_id);
+      useAppStore.setState({ workspace: "2D Research Viewer", plane: "axial", position: center, windowLevel: null, windowWidth: null });
+      await refreshDerived(detail.case_id, volume.shape);
     } catch (error) {
       setToast({ kind: "bad", text: error instanceof Error ? error.message : "Unable to open case." });
     } finally {
@@ -177,16 +181,17 @@ export default function Home() {
     }
   }
 
-  async function refreshDerived(caseId: string) {
+  async function refreshDerived(caseId: string, knownShape?: number[]) {
     try {
-      const volume = await api<{ shape: number[] }>(`/viewer/${encodeURIComponent(caseId)}/volume`);
-      const [z, y, x] = volume.shape;
+      // Refresh does not reset the currently selected slice; use the viewer position.
+      const shape = knownShape ?? (await api<{ shape: number[] }>(`/viewer/${encodeURIComponent(caseId)}/volume`)).shape;
+      const { position } = useAppStore.getState();
+      const [z, y, x] = shape;
       const center = {
-        z: Math.max(0, Math.floor((z - 1) / 2)),
-        y: Math.max(0, Math.floor((y - 1) / 2)),
-        x: Math.max(0, Math.floor((x - 1) / 2)),
+        z: Math.max(0, Math.min(z - 1, position.z)),
+        y: Math.max(0, Math.min(y - 1, position.y)),
+        x: Math.max(0, Math.min(x - 1, position.x)),
       };
-      useAppStore.setState({ position: center });
 
       const [q, s, m, images] = await Promise.allSettled([
         api<QC>(`/qc/${encodeURIComponent(caseId)}`),
@@ -278,6 +283,7 @@ export default function Home() {
           backendOnline={backendOnline}
           loadingCase={loadingCase}
           measurements={measurements}
+          onMeasurements={setMeasurements}
           surface={surface}
           mpr={mpr}
           models={models}
@@ -385,6 +391,7 @@ function WorkspaceShell(props: {
   backendOnline: boolean;
   loadingCase: boolean;
   measurements: Measurements | null;
+  onMeasurements: (value: Measurements | null) => void;
   surface: Surface | null;
   mpr: MPR | null;
   models: ModelRecord[];
@@ -408,20 +415,41 @@ function WorkspaceShell(props: {
   const [pan, setPan] = useState({ x: 0, y: 0 });
 
   const dimensions = activeCase?.summary?.volume_dimensions ?? [1, 1, 1];
-  const maxSlice = useMemo(() => {
-    if (store.plane === "axial") return Math.max(0, (dimensions[2] ?? 1) - 1);
-    if (store.plane === "coronal") return Math.max(0, (dimensions[1] ?? 1) - 1);
-    return Math.max(0, (dimensions[0] ?? 1) - 1);
-  }, [dimensions, store.plane]);
+  // Case summaries publish dimensions in [x, y, z] while imaging volumes are
+  // stored [z, y, x]. Use the same axis convention as the FastAPI slice renderer.
+  const maxSlice = Math.max(0, ((store.plane === "axial" ? dimensions[2]
+    : store.plane === "coronal" ? dimensions[1] : dimensions[0]) ?? 1) - 1);
 
   const currentSlice = store.plane === "axial" ? store.position.z : store.plane === "coronal" ? store.position.y : store.position.x;
-  const imageSrc = activeCase ? viewerUrl(activeCase.case_id, store.plane, Math.min(currentSlice, maxSlice), store.windowLevel, store.windowWidth) : "";
+  const boundedSlice = Math.max(0, Math.min(currentSlice, maxSlice));
+  const imageSrc = activeCase ? viewerUrl(activeCase.case_id, store.plane, boundedSlice, store.windowLevel, store.windowWidth) : "";
 
   useEffect(() => {
     if (!activeCase) return;
-    const clamped = Math.min(currentSlice, maxSlice);
-    if (clamped !== currentSlice) store.setSlice(clamped);
-  }, [activeCase, currentSlice, maxSlice, store]);
+    if (boundedSlice !== currentSlice) store.setSlice(boundedSlice);
+  }, [activeCase?.case_id, boundedSlice, currentSlice, store.setSlice]);
+
+  // Update the research statistics for the actual displayed 2D plane.
+  // Debounce changes so dragging or cine playback does not flood FastAPI or
+  // append an audit event for every intermediate position.
+  useEffect(() => {
+    if (!activeCase || cine) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void api<Measurements>("/measurements", {
+        method: "POST",
+        body: JSON.stringify({ case_id: activeCase.case_id, plane: store.plane, index: boundedSlice }),
+      }).then(result => {
+        if (!cancelled) props.onMeasurements(result);
+      }).catch(error => {
+        if (!cancelled) {
+          props.onMeasurements(null);
+          setToast({ kind: "warn", text: error instanceof Error ? error.message : "Slice statistics unavailable." });
+        }
+      });
+    }, 280);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [activeCase?.case_id, store.plane, boundedSlice, cine, props.onMeasurements, setToast]);
 
   useEffect(() => {
     if (!cine || !activeCase) return;
@@ -439,13 +467,21 @@ function WorkspaceShell(props: {
 
   useEffect(() => {
     if (!activeCase || store.workspace !== "4-Panel MPR") return;
+    let cancelled = false;
     const timer = window.setTimeout(() => {
-      void api<MPR>(`/viewer/${encodeURIComponent(activeCase.case_id)}/mpr?z=${store.position.z}&y=${store.position.y}&x=${store.position.x}`).then((value) => {
-        setMprLocal(value);
-      }).catch(() => undefined);
+      const query = new URLSearchParams({
+        z: String(store.position.z), y: String(store.position.y), x: String(store.position.x),
+      });
+      if (store.windowLevel !== null) query.set("wl", String(store.windowLevel));
+      if (store.windowWidth !== null) query.set("ww", String(store.windowWidth));
+      void api<MPR>(`/viewer/${encodeURIComponent(activeCase.case_id)}/mpr?${query}`).then(value => {
+        if (!cancelled) setMprLocal(value);
+      }).catch(error => {
+        if (!cancelled) setToast({ kind: "warn", text: error instanceof Error ? error.message : "MPR loading failed." });
+      });
     }, 90);
-    return () => window.clearTimeout(timer);
-  }, [activeCase, store.position.x, store.position.y, store.position.z, store.workspace, store.windowLevel, store.windowWidth]);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [activeCase?.case_id, store.position.x, store.position.y, store.position.z, store.workspace, store.windowLevel, store.windowWidth, setToast]);
 
   const [mprLocal, setMprLocal] = useState<MPR | null>(mpr);
   useEffect(() => setMprLocal(mpr), [mpr]);
@@ -543,6 +579,7 @@ function WorkspaceShell(props: {
               mpr={mprLocal}
               surface={surface}
               measurements={measurements}
+              onMeasurements={props.onMeasurements}
               qc={qc}
               windowOpen={windowOpen}
               onWindowOpen={setWindowOpen}
@@ -608,6 +645,7 @@ function Viewer(props: {
   mpr: MPR | null;
   surface: Surface | null;
   measurements: Measurements | null;
+  onMeasurements: (value: Measurements | null) => void;
   qc: QC | null;
   windowOpen: boolean;
   onWindowOpen: (value: boolean) => void;
@@ -632,7 +670,52 @@ function Viewer(props: {
     </div>
     <AnimatePresence>{props.windowOpen ? <WindowLevelControls key="window-level" activeCase={props.activeCase} onClose={() => props.onWindowOpen(false)} /> : null}</AnimatePresence>
     <div className="min-h-0 flex-1">{props.workspace === "4-Panel MPR" ? <MPRViewer mpr={props.mpr} dimensions={props.activeCase?.summary?.volume_dimensions ?? [1, 1, 1]} onPosition={(patch) => { const current = useAppStore.getState().position; useAppStore.getState().set({ position: { ...current, ...patch } }); }} /> : props.workspace === "3D Reconstruction" ? <SurfaceViewer surface={props.surface} activeCase={props.activeCase} setToast={props.setToast} /> : props.workspace === "AI Analysis" ? <WorkspaceNotice title="Dataset & AI Analytics" badge="OPEN ANALYTICS SUITE" message="Use the Analytics button for MONAI model management, research radiomics, validation, cardiac/prostate analysis, PI-RADS worksheet, DICOM SEG/SR, RBAC, PostgreSQL/S3 status, and cross-modality synthesis." /> : props.workspace === "Comparison" ? <WorkspaceNotice title="Longitudinal Comparison" badge="USE ANALYTICS SUITE" message="Select two or more compatible studies from Dataset & AI Analytics → Segmentation & metrics to compare metadata and later attach compatible measurements." /> : props.workspace === "Reporting" ? <ReportingWorkspace activeCase={props.activeCase} measurements={props.measurements} qc={props.qc} onExport={props.onExport} onExportSeg={props.onExportSeg} onExportSr={props.onExportSr} /> : props.workspace === "Quantitative Analysis" ? <QuantitativeWorkspace activeCase={props.activeCase} measurements={props.measurements} /> : <SingleViewer {...props} />}</div>
-    <div className="h-16 shrink-0 border-t border-slate-800/80 bg-[#080c11] px-3 py-2"><div className="flex items-center justify-between text-[9px] uppercase tracking-[.13em] text-slate-600"><span>Slice navigator</span><span className="mono text-slate-400">{Math.min(props.currentSlice, props.maxSlice) + 1} / {props.maxSlice + 1}</span></div><input aria-label="Slice" type="range" min={0} max={Math.max(0, props.maxSlice)} value={Math.min(props.currentSlice, props.maxSlice)} onChange={(event) => props.onSlice(Number(event.target.value))} className="mt-2 w-full accent-cyan-300" /></div>
+    <SliceNavigator
+      plane={props.plane}
+      index={props.currentSlice}
+      maxIndex={props.maxSlice}
+      onChange={index => { props.onCine(false); props.onSlice(index); }}
+    />
+  </div>;
+}
+
+
+function SliceNavigator({ plane, index, maxIndex, onChange }: {
+  plane: Plane;
+  index: number;
+  maxIndex: number;
+  onChange: (value: number) => void;
+}) {
+  const safeMax = Math.max(0, maxIndex);
+  const current = Math.max(0, Math.min(safeMax, index));
+  const move = (next: number) => onChange(Math.max(0, Math.min(safeMax, Math.round(next))));
+  return <div className="shrink-0 border-t border-slate-800/80 bg-[#080c11] px-3 py-2">
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-[10px] font-semibold uppercase tracking-[.12em] text-cyan-200">
+        {plane} slice navigator
+      </span>
+      <div className="flex items-center gap-1.5">
+        <button type="button" aria-label="Previous slice" title="Previous slice" disabled={current === 0}
+          onClick={() => move(current - 1)}
+          className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 disabled:opacity-30">−</button>
+        <button type="button" aria-label="Center slice" title="Jump to center slice"
+          onClick={() => move(Math.floor(safeMax / 2))}
+          className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300">Center</button>
+        <button type="button" aria-label="Next slice" title="Next slice" disabled={current >= safeMax}
+          onClick={() => move(current + 1)}
+          className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 disabled:opacity-30">+</button>
+        <output className="mono min-w-[70px] text-right text-xs text-slate-200">{current + 1} / {safeMax + 1}</output>
+      </div>
+    </div>
+    <input
+      aria-label={`${plane} slice position`}
+      aria-valuetext={`Slice ${current + 1} of ${safeMax + 1}`}
+      type="range" min={0} max={safeMax} step={1}
+      value={current}
+      disabled={safeMax === 0}
+      onChange={event => move(Number(event.target.value))}
+      className="mt-2 w-full cursor-pointer accent-cyan-300 disabled:opacity-40"
+    />
   </div>;
 }
 
@@ -641,7 +724,7 @@ function WorkspaceNotice({ title, badge, message }: { title: string; badge: stri
 }
 
 function QuantitativeWorkspace({ activeCase, measurements }: { activeCase: CaseRecord | null; measurements: Measurements | null }) {
-  return <div className="h-full overflow-auto bg-[#020508] p-5 scan-grid"><div className="mx-auto max-w-3xl rounded-2xl border border-slate-800 bg-[#0a0f14]/95 p-5"><div className="flex items-start justify-between gap-4"><div><div className="text-[10px] uppercase tracking-[.18em] text-cyan-300/70">Quantitative Analysis</div><h2 className="mt-2 text-xl font-semibold text-slate-100">Source-derived measurements</h2></div><Badge tone="accent">ACTUAL SOURCE DATA</Badge></div><div className="mt-5 grid gap-2 sm:grid-cols-3"><Metric label="Mean" value={measurements ? measurements.mean_intensity.toFixed(3) : "—"} unit={measurements?.units === "HU" ? "HU" : "source units"} /><Metric label="Median" value={measurements ? measurements.median_intensity.toFixed(3) : "—"} unit={measurements?.units === "HU" ? "HU" : "source units"} /><Metric label="Area" value={measurements ? measurements.area_mm2.toFixed(3) : "—"} unit="mm²" /></div><div className="mt-4 rounded border border-slate-900 bg-slate-950/50 p-3 text-[10px] leading-5 text-slate-500">{measurements?.method ?? "Measurement unavailable — required imaging metadata or validated calibration is missing."}</div><div className="mt-4 grid gap-2 sm:grid-cols-2 text-[10px] text-slate-500"><div>Case: <span className="mono text-slate-300">{activeCase?.case_id ?? "—"}</span></div><div>Spacing: <span className="mono text-slate-300">{(measurements?.voxel_spacing_mm ?? []).map((v) => v.toFixed(3)).join(" × ") || "—"} mm</span></div></div></div></div>;
+  return <div className="h-full overflow-auto bg-[#020508] p-5 scan-grid"><div className="mx-auto max-w-3xl rounded-2xl border border-slate-800 bg-[#0a0f14]/95 p-5"><div className="flex items-start justify-between gap-4"><div><div className="text-[10px] uppercase tracking-[.18em] text-cyan-300/70">Quantitative Analysis</div><h2 className="mt-2 text-xl font-semibold text-slate-100">Source-derived measurements</h2></div><Badge tone="accent">ACTUAL SOURCE DATA</Badge></div><div className="mt-5 grid gap-2 sm:grid-cols-3"><Metric label="Mean" value={measurements ? measurements.mean_intensity.toFixed(3) : "—"} unit={measurements?.units === "HU" ? "HU" : "source units"} /><Metric label="Median" value={measurements ? measurements.median_intensity.toFixed(3) : "—"} unit={measurements?.units === "HU" ? "HU" : "source units"} /><Metric label="Full-plane area" value={measurements ? measurements.area_mm2.toFixed(3) : "—"} unit="mm²" /></div><div className="mt-4 rounded border border-slate-900 bg-slate-950/50 p-3 text-[10px] leading-5 text-slate-500">{measurements?.method ?? "Measurement unavailable — required imaging metadata or validated calibration is missing."}</div><div className="mt-4 grid gap-2 sm:grid-cols-2 text-[10px] text-slate-500"><div>Case: <span className="mono text-slate-300">{activeCase?.case_id ?? "—"}</span></div><div>Spacing: <span className="mono text-slate-300">{(measurements?.voxel_spacing_mm ?? []).map((v) => v.toFixed(3)).join(" × ") || "—"} mm</span></div></div></div></div>;
 }
 
 function ReportingWorkspace({ activeCase, measurements, qc, onExport, onExportSeg, onExportSr }: { activeCase: CaseRecord | null; measurements: Measurements | null; qc: QC | null; onExport: () => void; onExportSeg: () => void; onExportSr: () => void }) {
@@ -654,9 +737,81 @@ function WindowLevelControls({ activeCase, onClose }: { activeCase: CaseRecord; 
   return <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} className="border-b border-slate-800 bg-[#080c11] px-3 py-2"><div className="flex flex-wrap items-end gap-2"><div><div className="text-[9px] uppercase tracking-[.14em] text-slate-600">Window Level</div><input type="number" value={store.windowLevel ?? ""} placeholder="Auto" onChange={(event) => store.set({ windowLevel: event.target.value === "" ? null : Number(event.target.value) })} className="mt-1 w-24 rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-[10px] text-slate-300" /></div><div><div className="text-[9px] uppercase tracking-[.14em] text-slate-600">Window Width</div><input type="number" min={1} value={store.windowWidth ?? ""} placeholder="Auto" onChange={(event) => store.set({ windowWidth: event.target.value === "" ? null : Math.max(1, Number(event.target.value)) })} className="mt-1 w-24 rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-[10px] text-slate-300" /></div>{presets.map((preset) => <button key={preset.name} onClick={() => store.set({ windowLevel: preset.wl, windowWidth: preset.ww })} className="h-8 rounded border border-slate-800 px-2 text-[10px] text-slate-500 hover:text-slate-200">{preset.name}</button>)}<button onClick={() => store.set({ windowLevel: null, windowWidth: null })} className="h-8 rounded border border-slate-800 px-2 text-[10px] text-slate-500 hover:text-slate-200">Auto</button><button onClick={onClose} className="ml-auto h-8 rounded border border-slate-800 px-2 text-[10px] text-slate-600 hover:text-slate-300">Close</button></div></motion.div>;
 }
 
-function SingleViewer(props: any) {
-  const start = useRef<{ x: number; y: number } | null>(null);
-  return <div className="relative h-full overflow-hidden bg-[#020508] scan-grid"><div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(22,33,43,.5),transparent_55%)]" /><div className="absolute left-3 top-3 z-10 flex flex-wrap gap-1.5"><Badge tone="accent">{props.activeCase.summary?.modality ?? "N/A"}</Badge><Badge>{props.activeCase.status}</Badge><Badge>{props.activeCase.summary?.source_type ?? "SOURCE"}</Badge></div><div className="absolute right-3 top-3 z-10 text-right"><div className="mono text-[10px] text-slate-300">{props.plane.toUpperCase()}</div><div className="mono mt-1 text-[9px] text-slate-600">SLICE {String(props.currentSlice + 1).padStart(3, "0")}</div></div><div className="absolute inset-0 grid place-items-center p-10"><div className="relative max-h-full max-w-full overflow-hidden" onWheel={(event) => { event.preventDefault(); props.onZoom((value: number) => Math.max(0.5, Math.min(5, value + (event.deltaY < 0 ? 0.12 : -0.12)))); }} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); start.current = { x: event.clientX - props.pan.x, y: event.clientY - props.pan.y }; }} onPointerMove={(event) => { if (start.current) props.onPan({ x: event.clientX - start.current.x, y: event.clientY - start.current.y }); }} onPointerUp={() => { start.current = null; }} onPointerCancel={() => { start.current = null; }}><img draggable={false} alt="Medical image slice from source dataset" onError={() => props.setToast({ kind: "bad", text: "Slice image could not load from the Python API. Check the FastAPI CMD error output and open the /api/viewer/<case-id>/slice URL in a new tab; this may be a missing local image file or a server rendering error." })} src={props.imageSrc} className="max-h-[calc(100vh-185px)] max-w-[90%] select-none object-contain" style={{ transform: `translate(${props.pan.x}px,${props.pan.y}px) scale(${props.zoom})` }} /></div></div><div className="absolute bottom-3 left-3 right-3 z-10 flex items-end justify-between gap-4"><div className="space-y-0.5 text-[9px] text-slate-500"><div>Pixel spacing: <span className="mono text-slate-300">{(props.activeCase.summary?.pixel_spacing_mm ?? []).map((value: number) => value.toFixed(3)).join(" × ") || "N/A"} mm</span></div><div>Slice thickness: <span className="mono text-slate-300">{props.activeCase.summary?.slice_thickness_mm ? `${Number(props.activeCase.summary.slice_thickness_mm).toFixed(3)} mm` : "N/A"}</span></div></div><div className="rounded border border-slate-800 bg-black/55 px-2 py-1.5 text-[9px] text-slate-500">Scroll = zoom · Drag = pan</div></div></div>;
+function SingleViewer(props: Parameters<typeof Viewer>[0]) {
+  const dragStart = useRef<{ x: number; y: number } | null>(null);
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const isLoaded = loadedSrc === props.imageSrc;
+  const isFailed = failedSrc === props.imageSrc;
+  const summary = props.activeCase.summary;
+
+  return (
+    <div className="relative h-full overflow-hidden bg-[#020508] scan-grid">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(22,33,43,.5),transparent_55%)]" />
+      <div className="absolute left-3 top-3 z-10 flex flex-wrap gap-1.5">
+        <Badge tone="accent">{summary?.modality ?? "N/A"}</Badge>
+        <Badge>{props.activeCase.status}</Badge>
+        <Badge>{summary?.source_type ?? "SOURCE"}</Badge>
+      </div>
+      <div className="absolute right-3 top-3 z-10 text-right">
+        <div className="mono text-[10px] text-slate-300">{props.plane.toUpperCase()}</div>
+        <div className="mono mt-1 text-[9px] text-slate-500">SLICE {String(props.currentSlice + 1).padStart(3, "0")}</div>
+      </div>
+
+      <div className="absolute inset-0 grid place-items-center p-8">
+        <div className="relative h-full w-full overflow-hidden"
+          onWheel={event => {
+            event.preventDefault();
+            props.onZoom(value => Math.max(0.5, Math.min(5, value + (event.deltaY < 0 ? 0.12 : -0.12))));
+          }}
+          onPointerDown={event => {
+            event.currentTarget.setPointerCapture(event.pointerId);
+            dragStart.current = { x: event.clientX - props.pan.x, y: event.clientY - props.pan.y };
+          }}
+          onPointerMove={event => {
+            if (dragStart.current) props.onPan({
+              x: event.clientX - dragStart.current.x,
+              y: event.clientY - dragStart.current.y,
+            });
+          }}
+          onPointerUp={() => { dragStart.current = null; }}
+          onPointerCancel={() => { dragStart.current = null; }}>
+          <img
+            key={props.imageSrc}
+            draggable={false}
+            alt={`${props.plane} research imaging slice ${props.currentSlice + 1}`}
+            src={props.imageSrc}
+            onLoad={() => { setLoadedSrc(props.imageSrc); setFailedSrc(null); }}
+            onError={() => { setFailedSrc(props.imageSrc); setLoadedSrc(null); }}
+            className="h-full w-full select-none object-contain"
+            style={{
+              transform: `translate(${props.pan.x}px, ${props.pan.y}px) scale(${props.zoom})`,
+              visibility: isFailed ? "hidden" : "visible",
+            }}
+          />
+          {!isLoaded && !isFailed && (
+            <div role="status" className="pointer-events-none absolute inset-0 grid place-items-center text-xs text-cyan-200">
+              Loading {props.plane} slice {props.currentSlice + 1}…
+            </div>
+          )}
+          {isFailed && (
+            <div role="alert" className="pointer-events-none absolute inset-0 grid place-items-center p-6 text-center text-sm text-rose-300">
+              Unable to render this slice. Check the FastAPI terminal and the /api/viewer/&lt;case-id&gt;/slice response.
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="pointer-events-none absolute bottom-3 left-3 right-3 z-10 flex items-end justify-between gap-4 text-[9px] text-slate-400">
+        <div className="space-y-0.5">
+          <div>Pixel spacing: <span className="mono text-slate-300">{(summary?.pixel_spacing_mm ?? []).map(value => value.toFixed(3)).join(" × ") || "N/A"} mm</span></div>
+          <div>Slice thickness: <span className="mono text-slate-300">{summary?.slice_thickness_mm ? `${Number(summary.slice_thickness_mm).toFixed(3)} mm` : "N/A"}</span></div>
+        </div>
+        <div className="rounded border border-slate-800 bg-black/55 px-2 py-1.5">
+          Wheel = zoom · Drag = pan · Use slice navigator below
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function MPRViewer({ mpr, dimensions, onPosition }: { mpr: MPR | null; dimensions: number[]; onPosition: (patch: Partial<MPR["position"]>) => void }) {
@@ -780,7 +935,7 @@ function RightPanel(props: { activeCase: CaseRecord | null; measurements: Measur
 
   return <div>
     <Section title="Analysis Status"><div className="grid grid-cols-2 gap-1.5"><StatusCard label="Header / geometry QC" value={props.qc?.overall ?? "—"} tone={props.qc?.overall === "PASS" ? "good" : props.qc?.overall === "FAIL" ? "bad" : "warn"} /><StatusCard label="3D Surface" value={props.surface?.status ?? "—"} tone={props.surface?.status === "AVAILABLE" ? "good" : "warn"} /><StatusCard label="AI Models" value="NOT VALIDATED" tone="warn" /><StatusCard label="GPU" value={props.diagnostics?.gpu ?? "NOT CLAIMED"} tone="neutral" /></div></Section>
-    <Section title="Measurements"><p className="mb-2 text-[10px] text-amber-300">Research measurements only; synthetic data and displayed QC do not establish clinical validity or diagnosis.</p><div className="grid gap-1.5"><Metric label={props.measurements?.units === "HU" ? "Mean HU" : "Mean intensity"} value={props.measurements ? props.measurements.mean_intensity.toFixed(3) : "—"} source="Selected plane • actual source pixels" /><Metric label={props.measurements?.units === "HU" ? "Median HU" : "Median intensity"} value={props.measurements ? props.measurements.median_intensity.toFixed(3) : "—"} source="Selected plane • actual source pixels" /><Metric label="Area" value={props.measurements ? props.measurements.area_mm2.toFixed(3) : "—"} unit="mm²" source="Pixel count × source spacing" /></div><div className="mt-2 rounded border border-slate-800 bg-slate-950/45 p-2 text-[9px] leading-4 text-slate-500">{props.measurements?.method ?? "Measurement unavailable — required imaging metadata or validated calibration is missing."}</div></Section>
+    <Section title="Measurements"><p className="mb-2 text-[10px] text-amber-300">Research measurements only; synthetic data and displayed QC do not establish clinical validity or diagnosis.</p><div className="grid gap-1.5"><Metric label={props.measurements?.units === "HU" ? "Mean HU" : "Mean intensity"} value={props.measurements ? props.measurements.mean_intensity.toFixed(3) : "—"} source="Selected plane • actual source pixels" /><Metric label={props.measurements?.units === "HU" ? "Median HU" : "Median intensity"} value={props.measurements ? props.measurements.median_intensity.toFixed(3) : "—"} source="Selected plane • actual source pixels" /><Metric label="Full-plane area" value={props.measurements ? props.measurements.area_mm2.toFixed(3) : "—"} unit="mm²" source="Entire image plane, not a lesion ROI" /></div><div className="mt-2 rounded border border-slate-800 bg-slate-950/45 p-2 text-[9px] leading-4 text-slate-500">{props.measurements?.method ?? "Measurement unavailable — required imaging metadata or validated calibration is missing."}</div></Section>
     <Section title="Research Threshold Segmentation"><div className="space-y-2"><div className="grid grid-cols-2 gap-1.5"><input value={lower} onChange={(event) => setLower(event.target.value)} inputMode="decimal" aria-label="Lower intensity threshold" className="rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-[10px] text-slate-300 outline-none" placeholder="Lower" /><input value={upper} onChange={(event) => setUpper(event.target.value)} inputMode="decimal" aria-label="Upper intensity threshold" className="rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-[10px] text-slate-300 outline-none" placeholder="Upper" /></div><button onClick={() => void runThreshold()} disabled={running || !props.activeCase} className="w-full rounded-md border border-cyan-400/20 bg-cyan-400/10 px-2.5 py-2 text-[10px] text-cyan-100 disabled:opacity-50">{running ? "Running…" : "Run threshold mask"}</button>{thresholdResult ? <div className="rounded border border-slate-800 bg-slate-950/55 p-2"><div className="text-[9px] uppercase tracking-[.12em] text-slate-600">Actual data-derived volume</div><div className="mt-1 mono text-sm text-slate-200">{thresholdResult.volume_cm3.toFixed(3)} cm³</div><div className="mt-1 text-[9px] leading-4 text-slate-600">Voxel count: <span className="mono text-slate-400">{thresholdResult.mask_voxel_count}</span><br />Method: {thresholdResult.provenance.processing_pipeline_version}</div></div> : null}</div></Section>
     <Section title="3D Surface Reconstruction"><div className="space-y-2"><div className="grid grid-cols-2 gap-1.5"><Metric label="Vertices" value={props.surface?.vertex_count ?? "—"} /><Metric label="Triangles" value={props.surface?.triangle_count ?? "—"} /><Metric label="Surface area" value={props.surface?.surface_area_mm2 ? props.surface.surface_area_mm2.toFixed(2) : "—"} unit="mm²" /><Metric label="Derived volume" value={props.surface?.volume_cm3 ? props.surface.volume_cm3.toFixed(3) : "—"} unit="cm³" /></div><div className="rounded border border-slate-900 bg-slate-950/45 p-2 text-[9px] leading-4 text-slate-600">{props.surface?.method ?? "Surface reconstruction unavailable."}</div></div></Section>
     <Section title="AI Model Manager"><div className="space-y-1.5">{props.models.map((model) => <div key={model.model_id} className="rounded border border-slate-900 bg-slate-950/45 p-2"><div className="text-[10px] text-slate-300">{model.model_name}</div><div className="mt-1 flex items-center justify-between"><span className="mono text-[9px] text-slate-600">{model.modality} · {model.body_region}</span><Badge tone="warn">{model.status}</Badge></div></div>)}</div></Section>
