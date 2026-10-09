@@ -795,19 +795,70 @@ function StatusCard({ label, value, tone }: { label: string; value: string; tone
 function ImportModal({ onClose, onImport }: { onClose: () => void; onImport: (files: FileList | null, modality: "AUTO" | "CT" | "MRI") => void }) {
   const [drag, setDrag] = useState(false);
   const [modality, setModality] = useState<"AUTO" | "CT" | "MRI">("AUTO");
+  const [selectedFiles, setSelectedFiles] = useState<FileList | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const submit = (files: FileList | null) => { if (files?.length) onImport(files, modality); };
-  return <Modal onClose={onClose} title="Import Imaging Study"><div className="space-y-4">
-    <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
-      <div className="rounded-lg border border-slate-900 bg-slate-950/40 p-3 text-[10px] leading-4 text-slate-500"><span className="text-slate-300">NIfTI requires a declared modality.</span> DICOM modality is read from source metadata; a conflicting declaration is rejected.</div>
-      <label className="text-[9px] uppercase tracking-[.12em] text-slate-600">NIfTI modality<select value={modality} onChange={(e) => setModality(e.target.value as typeof modality)} className="mt-1 h-9 min-w-32 border border-slate-800 bg-slate-950 px-2 text-xs text-slate-300"><option value="AUTO">DICOM / AUTO</option><option value="CT">CT</option><option value="MRI">MRI</option></select></label>
+  const files = selectedFiles ? Array.from(selectedFiles) : [];
+  const hasNifti = files.some(file => /\.nii(?:\.gz)?$/i.test(file.name));
+  const canImport = files.length > 0 && (!hasNifti || modality !== "AUTO");
+
+  // Do not auto-upload on file selection. For NIfTI the researcher must state
+  // the actual source modality explicitly, not guess it from the extension.
+  const importSelected = () => { if (canImport) onImport(selectedFiles, modality); };
+  const chooseFiles = (list: FileList | null) => { setSelectedFiles(list?.length ? list : null); };
+
+  return <Modal onClose={onClose} title="Import Imaging Study">
+    <div className="space-y-4">
+      <div className="grid gap-3 sm:grid-cols-[1fr_auto]">
+        <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-xs leading-5 text-slate-400">
+          <strong className="text-slate-200">Confirm imaging modality before upload.</strong> For NIfTI files,
+          select CT or MRI from trusted dataset information. DICOM modality is read from source metadata;
+          incompatible declarations will be rejected by the backend.
+        </div>
+        <label className="text-[10px] uppercase tracking-[.12em] text-slate-400">Dataset modality
+          <select value={modality} onChange={(event) => setModality(event.target.value as typeof modality)}
+            className="mt-2 h-10 min-w-36 border border-slate-700 bg-slate-950 px-3 text-sm text-slate-200">
+            <option value="AUTO">DICOM / AUTO</option>
+            <option value="CT">CT (verified NIfTI)</option>
+            <option value="MRI">MRI (verified NIfTI)</option>
+          </select>
+        </label>
+      </div>
+      <div role="button" tabIndex={0} aria-label="Choose local DICOM or NIfTI study files"
+        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); inputRef.current?.click(); } }}
+        onDragOver={(event) => { event.preventDefault(); setDrag(true); }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={(event) => { event.preventDefault(); setDrag(false); chooseFiles(event.dataTransfer.files); }}
+        onClick={() => inputRef.current?.click()}
+        className={`grid min-h-44 cursor-pointer place-items-center rounded-xl border border-dashed outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50 ${drag ? "border-cyan-300/50 bg-cyan-300/[.04]" : "border-slate-700 bg-slate-950/45"} p-6 text-center`}>
+        <input ref={inputRef} type="file" multiple hidden accept=".dcm,.dicom,.nii,.nii.gz,.zip"
+          onChange={(event) => chooseFiles(event.currentTarget.files)} />
+        <div>
+          <div className="mx-auto grid size-11 place-items-center rounded-xl border border-slate-800 bg-slate-900/70 text-cyan-200"><Upload size={20} /></div>
+          <div className="mt-3 text-sm text-slate-200">Choose or drop DICOM, NIfTI, or DICOM ZIP</div>
+          <div className="mt-1 text-xs text-slate-500">.dcm · .dicom · .nii · .nii.gz · .zip</div>
+          <div className="mt-2 text-xs text-cyan-200">{files.length ? `${files.length} file(s) selected` : "Nothing uploaded yet"}</div>
+        </div>
+      </div>
+      {files.length > 0 && <div className="rounded-lg border border-slate-800 bg-slate-950/40 p-3 text-xs text-slate-300" role="status">
+        <span className="font-medium">Selection:</span> {files.slice(0, 3).map(file => file.name).join(", ")}
+        {files.length > 3 ? ` and ${files.length - 3} more` : ""}
+      </div>}
+      {hasNifti && modality === "AUTO" && <p role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs leading-5 text-amber-200">
+        NIfTI does not reliably declare CT versus MRI. Choose the verified modality above before importing.
+        No files have been uploaded. If the modality is unknown, do not guess.
+      </p>}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="max-w-md text-xs text-slate-500">Local research use only. Synthetic or appropriately de-identified data; do not use identifiable clinical images.</p>
+        <button type="button" onClick={importSelected} disabled={!canImport}
+          className="rounded-lg bg-cyan-700 px-5 py-2.5 text-sm font-semibold text-white hover:bg-cyan-600 disabled:cursor-not-allowed disabled:opacity-40">
+          Import selected study
+        </button>
+      </div>
+      <div className="rounded-lg border border-amber-500/20 bg-amber-500/[.04] p-3 text-xs leading-5 text-amber-200/80">
+        Mixed series, invalid geometry, unsupported multiframe images and malformed archives remain rejected by server-side checks.
+      </div>
     </div>
-    <div role="button" tabIndex={0} aria-label="Import DICOM or NIfTI study" onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); inputRef.current?.click(); } }} onDragOver={(event) => { event.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={(event) => { event.preventDefault(); setDrag(false); submit(event.dataTransfer.files); }} onClick={() => inputRef.current?.click()} className={`grid min-h-52 cursor-pointer place-items-center rounded-xl border border-dashed outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/50 ${drag ? "border-cyan-300/50 bg-cyan-300/[.04]" : "border-slate-700 bg-slate-950/45"} p-8 text-center`}>
-      <input ref={inputRef} type="file" multiple hidden accept=".dcm,.nii,.nii.gz,.zip" onChange={(event) => submit(event.target.files)} />
-      <div><div className="mx-auto grid size-12 place-items-center rounded-xl border border-slate-800 bg-slate-900/70 text-cyan-200"><Upload size={20} /></div><div className="mt-3 text-sm text-slate-200">Drop DICOM, NIfTI, or DICOM ZIP</div><div className="mt-1 text-[10px] text-slate-600">.dcm · .nii · .nii.gz · .zip</div><div className="mt-2 mono text-[9px] text-slate-700">Declared modality: {modality}</div></div>
-    </div>
-    <div className="rounded-lg border border-amber-500/15 bg-amber-500/[.04] p-3 text-[10px] leading-4 text-amber-200/80">Mixed series, invalid geometry, unsupported multiframe objects, and malformed archives are rejected rather than silently processed.</div>
-  </div></Modal>;
+  </Modal>;
 }
 
 function CasesModal({ cases, onClose, onOpen, onDelete, onError }: { cases: CaseRecord[]; onClose: () => void; onOpen: (record: CaseRecord) => void; onDelete: (id: string) => void; onError: (message: string) => void }) {
