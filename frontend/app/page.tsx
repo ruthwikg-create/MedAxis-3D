@@ -670,7 +670,52 @@ function Viewer(props: {
     </div>
     <AnimatePresence>{props.windowOpen ? <WindowLevelControls key="window-level" activeCase={props.activeCase} onClose={() => props.onWindowOpen(false)} /> : null}</AnimatePresence>
     <div className="min-h-0 flex-1">{props.workspace === "4-Panel MPR" ? <MPRViewer mpr={props.mpr} dimensions={props.activeCase?.summary?.volume_dimensions ?? [1, 1, 1]} onPosition={(patch) => { const current = useAppStore.getState().position; useAppStore.getState().set({ position: { ...current, ...patch } }); }} /> : props.workspace === "3D Reconstruction" ? <SurfaceViewer surface={props.surface} activeCase={props.activeCase} setToast={props.setToast} /> : props.workspace === "AI Analysis" ? <WorkspaceNotice title="Dataset & AI Analytics" badge="OPEN ANALYTICS SUITE" message="Use the Analytics button for MONAI model management, research radiomics, validation, cardiac/prostate analysis, PI-RADS worksheet, DICOM SEG/SR, RBAC, PostgreSQL/S3 status, and cross-modality synthesis." /> : props.workspace === "Comparison" ? <WorkspaceNotice title="Longitudinal Comparison" badge="USE ANALYTICS SUITE" message="Select two or more compatible studies from Dataset & AI Analytics → Segmentation & metrics to compare metadata and later attach compatible measurements." /> : props.workspace === "Reporting" ? <ReportingWorkspace activeCase={props.activeCase} measurements={props.measurements} qc={props.qc} onExport={props.onExport} onExportSeg={props.onExportSeg} onExportSr={props.onExportSr} /> : props.workspace === "Quantitative Analysis" ? <QuantitativeWorkspace activeCase={props.activeCase} measurements={props.measurements} /> : <SingleViewer {...props} />}</div>
-    <div className="h-16 shrink-0 border-t border-slate-800/80 bg-[#080c11] px-3 py-2"><div className="flex items-center justify-between text-[9px] uppercase tracking-[.13em] text-slate-600"><span>Slice navigator</span><span className="mono text-slate-400">{Math.min(props.currentSlice, props.maxSlice) + 1} / {props.maxSlice + 1}</span></div><input aria-label="Slice" type="range" min={0} max={Math.max(0, props.maxSlice)} value={Math.min(props.currentSlice, props.maxSlice)} onChange={(event) => props.onSlice(Number(event.target.value))} className="mt-2 w-full accent-cyan-300" /></div>
+    <SliceNavigator
+      plane={props.plane}
+      index={props.currentSlice}
+      maxIndex={props.maxSlice}
+      onChange={index => { props.onCine(false); props.onSlice(index); }}
+    />
+  </div>;
+}
+
+
+function SliceNavigator({ plane, index, maxIndex, onChange }: {
+  plane: Plane;
+  index: number;
+  maxIndex: number;
+  onChange: (value: number) => void;
+}) {
+  const safeMax = Math.max(0, maxIndex);
+  const current = Math.max(0, Math.min(safeMax, index));
+  const move = (next: number) => onChange(Math.max(0, Math.min(safeMax, Math.round(next))));
+  return <div className="shrink-0 border-t border-slate-800/80 bg-[#080c11] px-3 py-2">
+    <div className="flex items-center justify-between gap-3">
+      <span className="text-[10px] font-semibold uppercase tracking-[.12em] text-cyan-200">
+        {plane} slice navigator
+      </span>
+      <div className="flex items-center gap-1.5">
+        <button type="button" aria-label="Previous slice" title="Previous slice" disabled={current === 0}
+          onClick={() => move(current - 1)}
+          className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 disabled:opacity-30">−</button>
+        <button type="button" aria-label="Center slice" title="Jump to center slice"
+          onClick={() => move(Math.floor(safeMax / 2))}
+          className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300">Center</button>
+        <button type="button" aria-label="Next slice" title="Next slice" disabled={current >= safeMax}
+          onClick={() => move(current + 1)}
+          className="rounded border border-slate-700 px-2 py-1 text-xs text-slate-300 disabled:opacity-30">+</button>
+        <output className="mono min-w-[70px] text-right text-xs text-slate-200">{current + 1} / {safeMax + 1}</output>
+      </div>
+    </div>
+    <input
+      aria-label={`${plane} slice position`}
+      aria-valuetext={`Slice ${current + 1} of ${safeMax + 1}`}
+      type="range" min={0} max={safeMax} step={1}
+      value={current}
+      disabled={safeMax === 0}
+      onChange={event => move(Number(event.target.value))}
+      className="mt-2 w-full cursor-pointer accent-cyan-300 disabled:opacity-40"
+    />
   </div>;
 }
 
@@ -692,9 +737,81 @@ function WindowLevelControls({ activeCase, onClose }: { activeCase: CaseRecord; 
   return <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} className="border-b border-slate-800 bg-[#080c11] px-3 py-2"><div className="flex flex-wrap items-end gap-2"><div><div className="text-[9px] uppercase tracking-[.14em] text-slate-600">Window Level</div><input type="number" value={store.windowLevel ?? ""} placeholder="Auto" onChange={(event) => store.set({ windowLevel: event.target.value === "" ? null : Number(event.target.value) })} className="mt-1 w-24 rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-[10px] text-slate-300" /></div><div><div className="text-[9px] uppercase tracking-[.14em] text-slate-600">Window Width</div><input type="number" min={1} value={store.windowWidth ?? ""} placeholder="Auto" onChange={(event) => store.set({ windowWidth: event.target.value === "" ? null : Math.max(1, Number(event.target.value)) })} className="mt-1 w-24 rounded border border-slate-800 bg-slate-950 px-2 py-1.5 text-[10px] text-slate-300" /></div>{presets.map((preset) => <button key={preset.name} onClick={() => store.set({ windowLevel: preset.wl, windowWidth: preset.ww })} className="h-8 rounded border border-slate-800 px-2 text-[10px] text-slate-500 hover:text-slate-200">{preset.name}</button>)}<button onClick={() => store.set({ windowLevel: null, windowWidth: null })} className="h-8 rounded border border-slate-800 px-2 text-[10px] text-slate-500 hover:text-slate-200">Auto</button><button onClick={onClose} className="ml-auto h-8 rounded border border-slate-800 px-2 text-[10px] text-slate-600 hover:text-slate-300">Close</button></div></motion.div>;
 }
 
-function SingleViewer(props: any) {
-  const start = useRef<{ x: number; y: number } | null>(null);
-  return <div className="relative h-full overflow-hidden bg-[#020508] scan-grid"><div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(22,33,43,.5),transparent_55%)]" /><div className="absolute left-3 top-3 z-10 flex flex-wrap gap-1.5"><Badge tone="accent">{props.activeCase.summary?.modality ?? "N/A"}</Badge><Badge>{props.activeCase.status}</Badge><Badge>{props.activeCase.summary?.source_type ?? "SOURCE"}</Badge></div><div className="absolute right-3 top-3 z-10 text-right"><div className="mono text-[10px] text-slate-300">{props.plane.toUpperCase()}</div><div className="mono mt-1 text-[9px] text-slate-600">SLICE {String(props.currentSlice + 1).padStart(3, "0")}</div></div><div className="absolute inset-0 grid place-items-center p-10"><div className="relative max-h-full max-w-full overflow-hidden" onWheel={(event) => { event.preventDefault(); props.onZoom((value: number) => Math.max(0.5, Math.min(5, value + (event.deltaY < 0 ? 0.12 : -0.12)))); }} onPointerDown={(event) => { event.currentTarget.setPointerCapture(event.pointerId); start.current = { x: event.clientX - props.pan.x, y: event.clientY - props.pan.y }; }} onPointerMove={(event) => { if (start.current) props.onPan({ x: event.clientX - start.current.x, y: event.clientY - start.current.y }); }} onPointerUp={() => { start.current = null; }} onPointerCancel={() => { start.current = null; }}><img draggable={false} alt="Medical image slice from source dataset" onError={() => props.setToast({ kind: "bad", text: "Slice image could not load from the Python API. Check the FastAPI CMD error output and open the /api/viewer/<case-id>/slice URL in a new tab; this may be a missing local image file or a server rendering error." })} src={props.imageSrc} className="max-h-[calc(100vh-185px)] max-w-[90%] select-none object-contain" style={{ transform: `translate(${props.pan.x}px,${props.pan.y}px) scale(${props.zoom})` }} /></div></div><div className="absolute bottom-3 left-3 right-3 z-10 flex items-end justify-between gap-4"><div className="space-y-0.5 text-[9px] text-slate-500"><div>Pixel spacing: <span className="mono text-slate-300">{(props.activeCase.summary?.pixel_spacing_mm ?? []).map((value: number) => value.toFixed(3)).join(" × ") || "N/A"} mm</span></div><div>Slice thickness: <span className="mono text-slate-300">{props.activeCase.summary?.slice_thickness_mm ? `${Number(props.activeCase.summary.slice_thickness_mm).toFixed(3)} mm` : "N/A"}</span></div></div><div className="rounded border border-slate-800 bg-black/55 px-2 py-1.5 text-[9px] text-slate-500">Scroll = zoom · Drag = pan</div></div></div>;
+function SingleViewer(props: Parameters<typeof Viewer>[0]) {
+  const dragStart = useRef<{ x: number; y: number } | null>(null);
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const isLoaded = loadedSrc === props.imageSrc;
+  const isFailed = failedSrc === props.imageSrc;
+  const summary = props.activeCase.summary;
+
+  return (
+    <div className="relative h-full overflow-hidden bg-[#020508] scan-grid">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(22,33,43,.5),transparent_55%)]" />
+      <div className="absolute left-3 top-3 z-10 flex flex-wrap gap-1.5">
+        <Badge tone="accent">{summary?.modality ?? "N/A"}</Badge>
+        <Badge>{props.activeCase.status}</Badge>
+        <Badge>{summary?.source_type ?? "SOURCE"}</Badge>
+      </div>
+      <div className="absolute right-3 top-3 z-10 text-right">
+        <div className="mono text-[10px] text-slate-300">{props.plane.toUpperCase()}</div>
+        <div className="mono mt-1 text-[9px] text-slate-500">SLICE {String(props.currentSlice + 1).padStart(3, "0")}</div>
+      </div>
+
+      <div className="absolute inset-0 grid place-items-center p-8">
+        <div className="relative h-full w-full overflow-hidden"
+          onWheel={event => {
+            event.preventDefault();
+            props.onZoom(value => Math.max(0.5, Math.min(5, value + (event.deltaY < 0 ? 0.12 : -0.12))));
+          }}
+          onPointerDown={event => {
+            event.currentTarget.setPointerCapture(event.pointerId);
+            dragStart.current = { x: event.clientX - props.pan.x, y: event.clientY - props.pan.y };
+          }}
+          onPointerMove={event => {
+            if (dragStart.current) props.onPan({
+              x: event.clientX - dragStart.current.x,
+              y: event.clientY - dragStart.current.y,
+            });
+          }}
+          onPointerUp={() => { dragStart.current = null; }}
+          onPointerCancel={() => { dragStart.current = null; }}>
+          <img
+            key={props.imageSrc}
+            draggable={false}
+            alt={`${props.plane} research imaging slice ${props.currentSlice + 1}`}
+            src={props.imageSrc}
+            onLoad={() => { setLoadedSrc(props.imageSrc); setFailedSrc(null); }}
+            onError={() => { setFailedSrc(props.imageSrc); setLoadedSrc(null); }}
+            className="h-full w-full select-none object-contain"
+            style={{
+              transform: `translate(${props.pan.x}px, ${props.pan.y}px) scale(${props.zoom})`,
+              visibility: isFailed ? "hidden" : "visible",
+            }}
+          />
+          {!isLoaded && !isFailed && (
+            <div role="status" className="pointer-events-none absolute inset-0 grid place-items-center text-xs text-cyan-200">
+              Loading {props.plane} slice {props.currentSlice + 1}…
+            </div>
+          )}
+          {isFailed && (
+            <div role="alert" className="pointer-events-none absolute inset-0 grid place-items-center p-6 text-center text-sm text-rose-300">
+              Unable to render this slice. Check the FastAPI terminal and the /api/viewer/&lt;case-id&gt;/slice response.
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="pointer-events-none absolute bottom-3 left-3 right-3 z-10 flex items-end justify-between gap-4 text-[9px] text-slate-400">
+        <div className="space-y-0.5">
+          <div>Pixel spacing: <span className="mono text-slate-300">{(summary?.pixel_spacing_mm ?? []).map(value => value.toFixed(3)).join(" × ") || "N/A"} mm</span></div>
+          <div>Slice thickness: <span className="mono text-slate-300">{summary?.slice_thickness_mm ? `${Number(summary.slice_thickness_mm).toFixed(3)} mm` : "N/A"}</span></div>
+        </div>
+        <div className="rounded border border-slate-800 bg-black/55 px-2 py-1.5">
+          Wheel = zoom · Drag = pan · Use slice navigator below
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function MPRViewer({ mpr, dimensions, onPosition }: { mpr: MPR | null; dimensions: number[]; onPosition: (patch: Partial<MPR["position"]>) => void }) {
